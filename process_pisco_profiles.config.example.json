@@ -1,0 +1,38 @@
+{
+  "defaults": {
+    "source": "/mnt/filer"
+  },
+  "model_dirs": {
+    "binary": "/path/to/ViT_custom_size_sensitive_binary/best_model",
+    "living": "/path/to/ViT_custom_size_sensitive_v5/best_model"
+  },
+  "ctd_configs": {
+    "SO298": {
+      "dir": "/path/to/SO298/ctd",
+      "prefix": "son_298_1_"
+    },
+    "MSM126": {
+      "dir": "/path/to/MSM126/ctd",
+      "prefix": "msm_126_1_"
+    },
+    "M181": {
+      "dir": "/path/to/M181/ctd",
+      "prefix": "met_181_1_"
+    },
+    "M202": {
+      "dir": "/path/to/M202/ctd",
+      "prefix": "met_202_1_"
+    },
+    "SO308": {
+      "dir": "/path/to/SO308/ctd",
+      "prefix": "son_308_1_"
+    }
+  },
+  "log_configs": {
+    "SO298": "/path/to/SO298/logs",
+    "MSM126": "/path/to/MSM126/logs",
+    "M181": "/path/to/M181/logs",
+    "M202": "/path/to/M202/logs",
+    "SO308": "/path/to/SO308/logs"
+  }
+}
