@@ -1252,8 +1252,8 @@ def process_cruise_mode(
         logger.log("=" * 70)
 
         image_dirs = profile_image_dirs[profile_name]
-        # Save results in the profile's own _Results directory within source location
-        profile_output = os.path.join(profiles_base, profile_name, f"{profile_name}_Results")
+        # Save results under the requested output root, grouped by profile name
+        profile_output = os.path.join(output_root, profile_name, f"{profile_name}_Results")
         os.makedirs(profile_output, exist_ok=True)
 
         # Check if segmentation was already done
