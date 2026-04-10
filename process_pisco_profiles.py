@@ -41,7 +41,7 @@ for module_name in ("segmenter", "pisco_segmenter"):
         continue
 
 ap = None
-for module_name in ("analyze_profiles_seavision", "pisco_profile_utils"):
+for module_name in ("utils", "analyze_profiles_seavision", "pisco_profile_utils"):
     try:
         ap = importlib.import_module(module_name)
         break

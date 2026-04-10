@@ -24,7 +24,7 @@ The script is now configurable and easier to move into a dedicated repository:
 Core Python dependencies are already listed in the project `requirements.txt`.
 The script needs segmentation + profile-analysis modules and supports either local files or pip packages:
 - segmentation: local `segmenter.py` or package `pisco-segmenter`
-- profile analysis: local `analyze_profiles_seavision.py` or package `pisco-profile-utils`
+- profile analysis: local `utils.py` (preferred), local `analyze_profiles_seavision.py` (legacy), or package `pisco-profile-utils`
 
 Optional for model download from Hugging Face Hub:
 - `huggingface_hub`
@@ -143,8 +143,7 @@ Recommended minimal structure:
 pisco-profile-processor/
 ├── process_pisco_profiles.py
 ├── process_pisco_profiles.config.example.json
-├── segmenter.py
-├── analyze_profiles_seavision.py
+├── utils.py
 ├── requirements.txt
 └── README.md
 ```
