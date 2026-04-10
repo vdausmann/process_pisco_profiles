@@ -6,6 +6,12 @@
     "binary": "/path/to/ViT_custom_size_sensitive_binary/best_model",
     "living": "/path/to/ViT_custom_size_sensitive_v5/best_model"
   },
+  "model_hub": {
+    "binary_repo": "your-org/pisco-vit-binary",
+    "living_repo": "your-org/pisco-vit-living",
+    "revision": "main",
+    "cache_dir": "/path/to/hf-cache"
+  },
   "ctd_configs": {
     "SO298": {
       "dir": "/path/to/SO298/ctd",

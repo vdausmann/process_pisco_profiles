@@ -22,11 +22,14 @@ The script is now configurable and easier to move into a dedicated repository:
 ## Requirements
 
 Core Python dependencies are already listed in the project `requirements.txt`.
-The script depends on local modules:
-- `segmenter.py`
-- `analyze_profiles_seavision.py`
+The script needs segmentation + profile-analysis modules and supports either local files or pip packages:
+- segmentation: local `segmenter.py` or package `pisco-segmenter`
+- profile analysis: local `analyze_profiles_seavision.py` or package `pisco-profile-utils`
 
-When moving to a new repo, include those modules (or package them) alongside this script.
+Optional for model download from Hugging Face Hub:
+- `huggingface_hub`
+
+When moving to a new repo, either include local modules or install the two packages above.
 
 ## Quick start
 
@@ -104,6 +107,22 @@ python process_pisco_profiles.py \
 
 CLI flags still override defaults where relevant (`--binary-model-dir`, `--living-model-dir`).
 
+### Hugging Face model workflow (optional)
+
+You can load models from Hugging Face Hub instead of fixed local paths:
+
+```bash
+python process_pisco_profiles.py \
+  --mode cruise \
+  --cruise SO298 \
+  --output /data/pisco_cruise_out \
+  --binary-model-hf your-org/pisco-vit-binary \
+  --living-model-hf your-org/pisco-vit-living \
+  --model-revision main
+```
+
+Equivalent settings can also be placed in `model_hub` inside the JSON config.
+
 ## End-to-end workflow (for Dash app suites)
 
 1. **Select input scope**
@@ -160,3 +179,7 @@ Key options:
 - `--config <json>`
 - `--binary-model-dir <path>`
 - `--living-model-dir <path>`
+- `--binary-model-hf <repo-id>`
+- `--living-model-hf <repo-id>`
+- `--model-revision <revision>`
+- `--model-cache-dir <path>`

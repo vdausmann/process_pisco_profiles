@@ -19,6 +19,7 @@ import argparse
 import socket
 import datetime
 import json
+import importlib
 from glob import glob
 from typing import List, Dict, Tuple, Optional
 from dataclasses import dataclass
@@ -29,8 +30,23 @@ import numpy as np
 import pandas as pd
 from datasets import Dataset, Features, Value
 
-from segmenter import run_segmenter
-import analyze_profiles_seavision as ap
+run_segmenter = None
+for module_name in ("segmenter", "pisco_segmenter"):
+    try:
+        module = importlib.import_module(module_name)
+        run_segmenter = getattr(module, "run_segmenter", None)
+        if run_segmenter is not None:
+            break
+    except ImportError:
+        continue
+
+ap = None
+for module_name in ("analyze_profiles_seavision", "pisco_profile_utils"):
+    try:
+        ap = importlib.import_module(module_name)
+        break
+    except ImportError:
+        continue
 
 
 DEFAULT_BINARY_MODEL_DIR = '/home/veit/PIScO_dev/ViT_custom_size_sensitive_binary/best_model'
@@ -328,6 +344,48 @@ class Logger:
     def close(self):
         """Close the log file."""
         self.log_file.close()
+
+
+def ensure_dependencies_available(run_postanalysis: bool):
+    """Validate that required runtime dependencies are importable."""
+    if run_segmenter is None:
+        raise RuntimeError(
+            "Missing segmentation dependency. Install package `pisco-segmenter` "
+            "or provide `segmenter.py` on PYTHONPATH."
+        )
+
+    if run_postanalysis and ap is None:
+        raise RuntimeError(
+            "Missing profile analysis dependency. Install package `pisco-profile-utils` "
+            "or provide `analyze_profiles_seavision.py` on PYTHONPATH."
+        )
+
+
+def resolve_model_dir(
+    local_model_dir: str,
+    hf_repo: Optional[str] = None,
+    cache_dir: Optional[str] = None,
+    revision: Optional[str] = None,
+) -> str:
+    """Resolve model path from local directory or Hugging Face repository."""
+    if not hf_repo:
+        return local_model_dir
+
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError as exc:
+        raise RuntimeError(
+            "Hugging Face model repo requested, but `huggingface_hub` is not installed. "
+            "Install it with: pip install huggingface_hub"
+        ) from exc
+
+    resolved_path = snapshot_download(
+        repo_id=hf_repo,
+        cache_dir=cache_dir,
+        revision=revision,
+    )
+    print(f"Resolved HF model '{hf_repo}' to local path: {resolved_path}")
+    return resolved_path
 
 
 def load_json_config(config_path: str) -> Dict:
@@ -1412,6 +1470,30 @@ Examples:
         default=DEFAULT_LIVING_MODEL_DIR,
         help='Path to multiclass (living) ViT model directory'
     )
+
+    parser.add_argument(
+        '--binary-model-hf',
+        type=str,
+        help='Optional Hugging Face repo ID for binary model (overrides --binary-model-dir)'
+    )
+
+    parser.add_argument(
+        '--living-model-hf',
+        type=str,
+        help='Optional Hugging Face repo ID for living model (overrides --living-model-dir)'
+    )
+
+    parser.add_argument(
+        '--model-revision',
+        type=str,
+        help='Optional Hugging Face model revision/tag/commit'
+    )
+
+    parser.add_argument(
+        '--model-cache-dir',
+        type=str,
+        help='Optional cache directory for Hugging Face model downloads'
+    )
     
     args = parser.parse_args()
     
@@ -1432,6 +1514,10 @@ Examples:
     log_configs = DEFAULT_LOG_CONFIGS.copy()
     binary_model_dir = args.binary_model_dir
     living_model_dir = args.living_model_dir
+    binary_model_hf = args.binary_model_hf
+    living_model_hf = args.living_model_hf
+    model_revision = args.model_revision
+    model_cache_dir = args.model_cache_dir
 
     if args.config:
         try:
@@ -1443,11 +1529,38 @@ Examples:
             binary_model_dir = model_cfg.get("binary", binary_model_dir)
             living_model_dir = model_cfg.get("living", living_model_dir)
 
+            model_hub_cfg = cfg.get("model_hub", {})
+            binary_model_hf = binary_model_hf or model_hub_cfg.get("binary_repo")
+            living_model_hf = living_model_hf or model_hub_cfg.get("living_repo")
+            model_revision = model_revision or model_hub_cfg.get("revision")
+            model_cache_dir = model_cache_dir or model_hub_cfg.get("cache_dir")
+
             source_default = cfg.get("defaults", {}).get("source")
             if source_default and args.source == '/mnt/filer':
                 args.source = source_default
         except Exception as e:
             parser.error(f"Failed to load config file {args.config}: {e}")
+
+    try:
+        binary_model_dir = resolve_model_dir(
+            local_model_dir=binary_model_dir,
+            hf_repo=binary_model_hf,
+            cache_dir=model_cache_dir,
+            revision=model_revision,
+        )
+        living_model_dir = resolve_model_dir(
+            local_model_dir=living_model_dir,
+            hf_repo=living_model_hf,
+            cache_dir=model_cache_dir,
+            revision=model_revision,
+        )
+    except Exception as e:
+        parser.error(f"Model resolution failed: {e}")
+
+    try:
+        ensure_dependencies_available(run_postanalysis=not args.no_postanalysis)
+    except Exception as e:
+        parser.error(str(e))
     
     # Run appropriate mode
     if args.mode == 'benchmark':
