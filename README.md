@@ -135,6 +135,44 @@ Equivalent settings can also be placed in `model_hub` inside the JSON config.
 4. **Optional publishing/export**
    - enable `--export-zip` for EcoTaxa upload bundles
 
+## Abundance + biovolume post-processing
+
+Use `calc_abundance_biovolume_pisco.py` after profile processing to aggregate class-wise
+abundance and biovolume by depth bins, plus summary plots.
+
+Basic usage:
+
+```bash
+python calc_abundance_biovolume_pisco.py /path/to/results_root
+```
+
+Write all CSV + PNG outputs into one folder:
+
+```bash
+python calc_abundance_biovolume_pisco.py \
+  /path/to/results_root \
+  --output-dir /path/to/all_outputs
+```
+
+Depth binning options:
+
+```bash
+# explicit edges
+python calc_abundance_biovolume_pisco.py /path/to/results_root \
+  --output-dir /path/to/all_outputs \
+  --depth-bins 0,50,100,200,500,1000
+
+# evenly spaced bins
+python calc_abundance_biovolume_pisco.py /path/to/results_root \
+  --output-dir /path/to/all_outputs \
+  --depth-bin-step 10 \
+  --depth-bin-max 2000
+```
+
+Output files are written as profile-prefixed files (for example
+`<profile>_abundance_biovolume_by_depth.csv` and `<profile>_abundance_biovolume_by_depth.png`),
+and cruise-level stacked plots are also written to `--output-dir`.
+
 ## Preparing a new GitHub repository
 
 Recommended minimal structure:
