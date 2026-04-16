@@ -242,6 +242,10 @@ def process_profile(
     profile_output_dir,
     depth_bin_edges=DEFAULT_DEPTH_BINS,
 ):
+    empty_counts = pd.DataFrame()
+    empty_volumes = pd.DataFrame()
+    empty_raw = pd.DataFrame()
+
     profile_name = get_profile_name(profile_output_dir)
     mask_radius, data_source = read_settings(profile_output_dir)
 
@@ -252,17 +256,17 @@ def process_profile(
 
     if mask_radius is None:
         print(f"[WARN] Missing mask_radius for {profile_name}")
-        return pd.DataFrame(), pd.DataFrame()
+        return empty_counts, empty_volumes, empty_raw
 
     image_dir = find_image_dir(data_source)
     if image_dir is None:
         print(f"[WARN] Missing image directory for {profile_name}")
-        return pd.DataFrame(), pd.DataFrame()
+        return empty_counts, empty_volumes, empty_raw
 
     tsv_path = find_ecotaxa_tsv(profile_output_dir)
     if tsv_path is None:
         print(f"[WARN] Missing EcoTaxa TSV for {profile_name}")
-        return pd.DataFrame(), pd.DataFrame()
+        return empty_counts, empty_volumes, empty_raw
 
     print(f"Processing {profile_name} (cruise={cruise}, pressure_unit={pressure_unit})")
     volume_per_image = calculate_volume(mask_radius)
@@ -270,7 +274,7 @@ def process_profile(
     image_files = list(Path(image_dir).glob("*.png"))
     if not image_files:
         print(f"[WARN] No PNG images found in {image_dir}")
-        return pd.DataFrame(), pd.DataFrame()
+        return empty_counts, empty_volumes, empty_raw
 
     depth_bin_labels = [
         f"{depth_bin_edges[i]}-{depth_bin_edges[i + 1]}m"
@@ -313,12 +317,26 @@ def process_profile(
             }
         )
 
-    volume_df = pd.DataFrame(volume_records).sort_values("depth_bin_start_dbar")
+    volume_df = pd.DataFrame(
+        volume_records,
+        columns=[
+            "profile",
+            "cruise",
+            "depth_bin_start_dbar",
+            "depth_bin_end_dbar",
+            "depth_bin_label",
+            "sampled_volume_L",
+            "image_count",
+            "volume_per_image_L",
+        ],
+    )
+    if not volume_df.empty:
+        volume_df = volume_df.sort_values("depth_bin_start_dbar")
 
     df = load_ecotaxa_df(tsv_path)
     if "object_pressure" not in df.columns or "object_annotation_category" not in df.columns:
         print(f"[WARN] Missing required columns in {tsv_path}")
-        return pd.DataFrame(), volume_df
+        return empty_counts, volume_df, df
 
     df["object_pressure"] = pd.to_numeric(df["object_pressure"], errors="coerce")
     df = df.dropna(subset=["object_pressure"])
