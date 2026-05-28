@@ -86,6 +86,53 @@ python process_pisco_profiles.py \
   --profiles-file ./profiles.txt
 ```
 
+### 5) Cruise mode (custom folders - single folder)
+
+For new/uncurated cruises or non-standard folder structures, process a custom folder directly:
+
+```bash
+python process_pisco_profiles.py \
+  --mode cruise \
+  --cruise MY_NEW_CRUISE \
+  --folder /mnt/data/202604_ATAIR-BSB/20260422-2051 \
+  --output /data/pisco_custom_out
+```
+
+### 6) Cruise mode (custom folders - multiple folders via CLI)
+
+Process multiple folders as separate profiles:
+
+```bash
+python process_pisco_profiles.py \
+  --mode cruise \
+  --cruise MY_NEW_CRUISE \
+  --folders /mnt/data/folder1 /mnt/data/folder2 /mnt/data/folder3 \
+  --output /data/pisco_custom_out
+```
+
+### 7) Cruise mode (custom folders - multiple folders from file)
+
+Create `folders.txt`:
+
+```text
+# One folder path per line
+/mnt/data/202604_ATAIR-BSB/20260422-2051
+/mnt/data/202604_ATAIR-BSB/20260423-1345
+/mnt/data/202605_ATAIR-BSB/20260501-0900
+```
+
+Then run:
+
+```bash
+python process_pisco_profiles.py \
+  --mode cruise \
+  --cruise MY_NEW_CRUISE \
+  --folders-file ./folders.txt \
+  --output /data/pisco_custom_out
+```
+
+Note: `--cruise` accepts any name you choose—it's used for metadata and logging. For uncurated/new cruises without standard directory structure, use custom names like `MY_NEW_CRUISE`, `ATAIR-BSB`, or similar. CTD and log files are optional; processing will proceed without them if not available.
+
 ## Config-driven workflow
 
 Use `process_pisco_profiles.config.example.json` as template:
@@ -173,6 +220,40 @@ Output files are written as profile-prefixed files (for example
 `<profile>_abundance_biovolume_by_depth.csv` and `<profile>_abundance_biovolume_by_depth.png`),
 and cruise-level stacked plots are also written to `--output-dir`.
 
+## Session updates (2026-05-28)
+
+The following changes were implemented and validated during this session:
+
+- **Custom folder processing in `process_pisco_profiles.py`**
+  - Added `--folder` for a single direct image folder.
+  - Added `--folders` for multiple folder paths via CLI.
+  - Added `--folders-file` for newline/comma-delimited folder lists.
+  - Cruise mode now supports non-standard/new cruise layouts without requiring the classic cruise directory structure.
+
+- **Post-analysis robustness improvements**
+  - Missing coordinates no longer crash processing (`Coordinates: N/A` is logged when metadata is absent).
+  - `gen_crop_df` parsing in `utils.py` now supports additional filename layouts used in new deployments, including:
+    - `date-time_pressure_temperature_index` (4-part)
+    - `date-time_pressure_temperature` (3-part)
+  - Fallback `date-time` handling prevents sorting crashes when date-time fields are missing from parsed columns.
+
+- **Abundance/biovolume compatibility fixes (`calc_abundance_biovolume_pisco.py`)**
+  - Added support for source images in `.tif`/`.tiff` (in addition to `.png`).
+  - Pressure parsing now handles unit-suffixed strings (e.g. `000.930bar`) and converts consistently to dbar.
+  - Improved depth-bin split handling to avoid shape mismatch errors on edge-case labels.
+  - Added custom cruise detection from source paths like `.../202604_ATAIR-BSB_PISCO/...` so outputs show `ATAIR-BSB` instead of `UNKNOWN`.
+
+- **Standalone ZIP export flow added**
+  - Added `export_ecotaxa_zips.py` to create EcoTaxa ZIPs from existing results without rerunning segmentation/post-analysis.
+  - Fixed EcoTaxa TSV loading to preserve 2-row MultiIndex headers expected by `create_ecotaxa_zips`.
+  - Added folder filtering so only real profile result folders are exported.
+
+Example ZIP export command:
+
+```bash
+python export_ecotaxa_zips.py /media/veit/T710_data/pisco_processed/ATAIR-BSH --max-zip-size 1000
+```
+
 ## Preparing a new GitHub repository
 
 Recommended minimal structure:
@@ -202,13 +283,16 @@ python process_pisco_profiles.py --help
 
 Key options:
 - `--mode {benchmark,cruise}`
-- `--cruise <name>`
+- `--cruise <name>` (required for cruise mode; accepts any custom name)
 - `--source <path>`
-- `--output <path>`
+- `--output <path>` (required)
 - `--profiles-per-cruise <int>`
 - `--profile-limit <int>`
-- `--profiles <list>`
-- `--profiles-file <file>`
+- `--profiles <list>` (space and/or comma-separated)
+- `--profiles-file <file>` (newline-delimited file)
+- `--folder <path>` (single custom folder, bypasses cruise discovery)
+- `--folders <list>` (multiple custom folders, space-separated)
+- `--folders-file <file>` (newline-delimited file with folder paths)
 - `--export-zip | --no-export-zip`
 - `--no-deconv`
 - `--no-postanalysis`

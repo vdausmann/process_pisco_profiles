@@ -225,13 +225,30 @@ def gen_crop_df(path:str, small:bool, size_filter:int = 0, pressure_unit:str = '
 
     else:
         try:
-            headers = ["cruise", "dship_id", "instrument", "pressure","date-time","index"]
-            split_df.columns = headers
-            split_cols = split_df['pressure'].str.split('-', expand=True)
-            split_df[['pressure', 'lat', 'lon', 'temperature']] = split_cols
-            split_df['pressure'] = split_df['pressure'].str.replace(pressure_unit, '', regex=False).astype(float)
-            split_df['temperature'] = split_df['temperature'].str.replace('C', '', regex=False).astype(float)
-            split_df['index'] = split_df['index'].str.replace('.png', '', regex=False).astype(int)
+            if split_df.shape[1] == 4:
+                # Newer filename layout: 20260423-17214244_000.913bar_07.58C_13.png
+                headers = ["date-time", "pressure", "temperature", "index"]
+                split_df.columns = headers
+                split_df['date-time'] = split_df['date-time'].astype(str)
+                split_df['pressure'] = split_df['pressure'].str.replace(pressure_unit, '', regex=False).astype(float)
+                split_df['temperature'] = split_df['temperature'].str.replace('C', '', regex=False).astype(float)
+                split_df['index'] = split_df['index'].str.replace('.png', '', regex=False).astype(int)
+            elif split_df.shape[1] == 3:
+                # 3-part filename layout: 20260422-21031149_001.168bar_10.08C.csv
+                headers = ["date-time", "pressure", "temperature"]
+                split_df.columns = headers
+                split_df['date-time'] = split_df['date-time'].astype(str)
+                split_df['pressure'] = split_df['pressure'].str.replace(pressure_unit, '', regex=False).astype(float)
+                split_df['temperature'] = split_df['temperature'].str.replace('C', '', regex=False).str.replace('.csv', '', regex=False).astype(float)
+                split_df['index'] = range(1, len(split_df) + 1)
+            else:
+                headers = ["cruise", "dship_id", "instrument", "pressure","date-time","index"]
+                split_df.columns = headers
+                split_cols = split_df['pressure'].str.split('-', expand=True)
+                split_df[['pressure', 'lat', 'lon', 'temperature']] = split_cols
+                split_df['pressure'] = split_df['pressure'].str.replace(pressure_unit, '', regex=False).astype(float)
+                split_df['temperature'] = split_df['temperature'].str.replace('C', '', regex=False).astype(float)
+                split_df['index'] = split_df['index'].str.replace('.png', '', regex=False).astype(int)
            
         except ValueError:
             print(f"Error processing file {file} . Please check the format of the 'filename' column.")
@@ -255,6 +272,8 @@ def gen_crop_df(path:str, small:bool, size_filter:int = 0, pressure_unit:str = '
 
     # Sort the DataFrame by the 'date-time' column
     #print(df.head())
+    if 'date-time' not in df.columns:
+        df['date-time'] = df['filename'].astype(str).str.split('_', n=1).str[0]
     df = df.sort_values(by=['date-time','index'], ascending=True)
     df.reset_index(drop=True, inplace=True)
 

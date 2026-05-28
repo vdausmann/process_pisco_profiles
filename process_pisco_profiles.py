@@ -521,7 +521,10 @@ def process_profile_postanalysis(
         
         logger.log(f"  Cruise: {profile_info.cruise}")
         logger.log(f"  Profile ID: {profile_info.profile_id}")
-        logger.log(f"  Coordinates: {profile_info.latitude:.4f}, {profile_info.longitude:.4f}")
+        if profile_info.latitude is not None and profile_info.longitude is not None:
+            logger.log(f"  Coordinates: {profile_info.latitude:.4f}, {profile_info.longitude:.4f}")
+        else:
+            logger.log("  Coordinates: N/A")
         logger.log(f"  Pressure unit: {profile_info.pressure_unit}")
         logger.log(f"  Export ZIP: {export_zip}")
         
@@ -1135,13 +1138,14 @@ def process_cruise_mode(
     profile_limit: Optional[int] = None,
     profile_list: Optional[List[str]] = None,
     binary_model_dir: str = DEFAULT_BINARY_MODEL_DIR,
-    living_model_dir: str = DEFAULT_LIVING_MODEL_DIR
+    living_model_dir: str = DEFAULT_LIVING_MODEL_DIR,
+    folders: Optional[List[str]] = None
 ):
     """
     Process all profiles from a specific cruise.
     
     Args:
-        cruise_name: Name of the cruise (e.g., "SO298", "MSM126")
+        cruise_name: Name of the cruise (e.g., "SO298", "MSM126", or custom name)
         source_root: Root directory containing cruise folders
         output_root: Output directory for processed data
         deconvolution: Whether to apply deconvolution during segmentation
@@ -1153,29 +1157,49 @@ def process_cruise_mode(
         log_directory: Path to log directory
         profile_limit: If set, only process this many profiles (for testing)
         profile_list: If set, only process profiles with these names
+        folders: If set, process these folders directly (list of paths, bypasses cruise discovery)
     """
     os.makedirs(output_root, exist_ok=True)
 
-    # Find cruise directory first (before creating logger)
-    cruise_path = os.path.join(source_root, cruise_name)
-    if not os.path.exists(cruise_path):
-        print(f"ERROR: Cruise directory not found: {cruise_path}")
-        return
-
-    # Find profiles directory
-    profiles_base = os.path.join(cruise_path, f"{cruise_name}-PISCO-Profiles")
-    if not os.path.exists(profiles_base):
-        print(f"ERROR: PISCO-Profiles directory not found at {profiles_base}")
-        return
-
-    # Create logger in the profiles_base directory
+    # Create logger
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_path = os.path.join(profiles_base, f"{cruise_name}_processing_{timestamp}.log")
+    
+    # If folders are provided, use them directly
+    if folders:
+        # Validate all folders exist
+        for folder in folders:
+            if not os.path.exists(folder):
+                print(f"ERROR: Folder not found: {folder}")
+                return
+        
+        log_path = os.path.join(output_root, f"{cruise_name}_processing_{timestamp}.log")
+        using_custom_folders = True
+    else:
+        # Find cruise directory first (before creating logger)
+        cruise_path = os.path.join(source_root, cruise_name)
+        if not os.path.exists(cruise_path):
+            print(f"ERROR: Cruise directory not found: {cruise_path}")
+            return
+
+        # Find profiles directory
+        profiles_base = os.path.join(cruise_path, f"{cruise_name}-PISCO-Profiles")
+        if not os.path.exists(profiles_base):
+            print(f"ERROR: PISCO-Profiles directory not found at {profiles_base}")
+            return
+
+        log_path = os.path.join(profiles_base, f"{cruise_name}_processing_{timestamp}.log")
+        using_custom_folders = False
+
     logger = Logger(log_path)
 
     logger.log(f"Cruise Processing Log: {cruise_name}")
     logger.log(f"Started: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    logger.log(f"Source: {source_root}")
+    if using_custom_folders:
+        logger.log(f"Custom folders: {len(folders)} folder(s)")
+        for folder in folders:
+            logger.log(f"  - {folder}")
+    else:
+        logger.log(f"Source: {source_root}")
     logger.log(f"Output: {output_root}")
     logger.log(f"Deconvolution: {deconvolution}")
     logger.log(f"Post-analysis: {run_postanalysis}")
@@ -1189,26 +1213,35 @@ def process_cruise_mode(
     logger.log("")
 
     # Get all profile directories
-    profile_dirs = sorted([
-        d for d in os.listdir(profiles_base)
-        if os.path.isdir(os.path.join(profiles_base, d))
-        and not d.startswith(".")
-    ])
+    if using_custom_folders:
+        # Custom folders mode: treat each folder as a separate profile
+        profile_image_dirs: Dict[str, List[str]] = {}
+        for folder in folders:
+            profile_name = os.path.basename(folder)
+            image_dirs = find_image_dirs(folder, image_ext)
+            if image_dirs:
+                profile_image_dirs[profile_name] = image_dirs
+    else:
+        profile_dirs = sorted([
+            d for d in os.listdir(profiles_base)
+            if os.path.isdir(os.path.join(profiles_base, d))
+            and not d.startswith(".")
+        ])
 
-    if not profile_dirs:
-        logger.log(f"ERROR: No profiles found in {profiles_base}")
-        logger.close()
-        return
+        if not profile_dirs:
+            logger.log(f"ERROR: No profiles found in {profiles_base}")
+            logger.close()
+            return
 
-    logger.log(f"Total profiles available: {len(profile_dirs)}")
+        logger.log(f"Total profiles available: {len(profile_dirs)}")
 
-    # Filter to profiles with images
-    profile_image_dirs: Dict[str, List[str]] = {}
-    for profile_dir in profile_dirs:
-        profile_path = os.path.join(profiles_base, profile_dir)
-        image_dirs = find_image_dirs(profile_path, image_ext)
-        if image_dirs:
-            profile_image_dirs[profile_dir] = image_dirs
+        # Filter to profiles with images
+        profile_image_dirs: Dict[str, List[str]] = {}
+        for profile_dir in profile_dirs:
+            profile_path = os.path.join(profiles_base, profile_dir)
+            image_dirs = find_image_dirs(profile_path, image_ext)
+            if image_dirs:
+                profile_image_dirs[profile_dir] = image_dirs
 
     logger.log(f"Profiles with images: {len(profile_image_dirs)}")
 
@@ -1280,7 +1313,17 @@ def process_cruise_mode(
 
         # Run post-analysis if requested
         if run_postanalysis and segmented_count > 0:
-            profile_path = os.path.join(profiles_base, profile_name)
+            if using_custom_folders:
+                # Find which folder this profile came from
+                profile_path = None
+                for folder in folders:
+                    if os.path.basename(folder) == profile_name:
+                        profile_path = folder
+                        break
+                if profile_path is None:
+                    profile_path = profile_name  # Fallback
+            else:
+                profile_path = os.path.join(profiles_base, profile_name)
             success = process_profile_postanalysis(
                 profile_name=profile_name,
                 results_folder=profile_output,
@@ -1409,6 +1452,25 @@ Examples:
         '--profiles-file',
         type=str,
         help='Path to newline-delimited profile list file (supports # comments)'
+    )
+
+    parser.add_argument(
+        '--folder',
+        type=str,
+        help='Process a single folder with images directly (bypasses cruise directory discovery)'
+    )
+
+    parser.add_argument(
+        '--folders',
+        type=str,
+        nargs='+',
+        help='Process multiple folders with images directly (space-separated list)'
+    )
+
+    parser.add_argument(
+        '--folders-file',
+        type=str,
+        help='Path to newline-delimited or comma-delimited file with folder paths (supports # comments)'
     )
     
     parser.add_argument(
@@ -1589,6 +1651,29 @@ Examples:
         print(f"  Cruise: {args.cruise}")
         print(f"  Export ZIP: {export_zip}")
         print(f"  Output: {args.output}")
+        
+        # Handle folder inputs
+        folders_to_process = None
+        if args.folder:
+            folders_to_process = [args.folder]
+            print(f"  Folder: {args.folder}")
+        elif args.folders:
+            folders_to_process = args.folders
+            print(f"  Folders: {len(args.folders)} folder(s)")
+            for folder in args.folders:
+                print(f"    - {folder}")
+        elif args.folders_file:
+            # Read folders from file
+            try:
+                folders_to_process = normalize_profile_list(None, args.folders_file)
+                if folders_to_process:
+                    print(f"  Folders file: {args.folders_file}")
+                    print(f"  Folders: {len(folders_to_process)} folder(s)")
+                    for folder in folders_to_process:
+                        print(f"    - {folder}")
+            except Exception as e:
+                parser.error(f"Failed to read folders file {args.folders_file}: {e}")
+        
         if args.profile_limit:
             print(f"  Profile limit: {args.profile_limit}")
         if profiles:
@@ -1608,7 +1693,8 @@ Examples:
             profile_limit=args.profile_limit,
             profile_list=profiles,
             binary_model_dir=binary_model_dir,
-            living_model_dir=living_model_dir
+            living_model_dir=living_model_dir,
+            folders=folders_to_process
         )
 
 

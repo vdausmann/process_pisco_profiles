@@ -48,6 +48,16 @@ def detect_cruise_from_text(text):
     for cruise in KNOWN_CRUISES:
         if cruise.upper() in text_upper:
             return cruise
+
+    # Support custom cruise folders like '202604_ATAIR-BSB_PISCO'
+    match = re.search(r"/([^/]+)_PISCO(?:/|$)", text)
+    if match:
+        cruise_name = match.group(1)
+        # Drop any leading date-like prefix before the cruise name
+        if "_" in cruise_name:
+            cruise_name = cruise_name.split("_", 1)[1]
+        return cruise_name
+
     return None
 
 
@@ -163,13 +173,14 @@ def find_image_dir(data_source):
 
     data_source = Path(data_source)
     if data_source.exists() and data_source.is_dir():
-        if list(data_source.glob("*.png")):
+        # Check for PNG or TIFF images
+        if list(data_source.glob("*.png")) or list(data_source.glob("*.tif")) or list(data_source.glob("*.tiff")):
             return data_source
 
         # If passed path is a parent folder, try to find a child with images
         for child in data_source.iterdir():
             if child.is_dir():
-                if list(child.glob("*.png")):
+                if list(child.glob("*.png")) or list(child.glob("*.tif")) or list(child.glob("*.tiff")):
                     return child
     return None
 
@@ -182,7 +193,7 @@ def suggest_depth_bin_max_from_profiles(profile_dirs, bin_step, fallback=DEFAULT
         if image_dir is None:
             continue
 
-        for image_file in Path(image_dir).glob("*.png"):
+        for image_file in list(Path(image_dir).glob("*.png")) + list(Path(image_dir).glob("*.tif")) + list(Path(image_dir).glob("*.tiff")):
             pressure_dbar = extract_pressure_dbar_from_filename(image_file.name)
             if pressure_dbar is None:
                 continue
@@ -214,6 +225,30 @@ def extract_pressure_dbar_from_filename(filename):
         return float(match.group(1))
 
     return None
+
+
+def parse_pressure_value_to_dbar(value):
+    """Parse a pressure value that may already be numeric or may include units."""
+    if pd.isna(value):
+        return None
+
+    # Handle numeric values directly
+    try:
+        return float(value)
+    except Exception:
+        pass
+
+    # Handle string values like '000.930bar' or '9.3dbar'
+    text = str(value).strip().lower()
+    match = re.search(r"(\d+(?:\.\d+)?)(dbar|bar|m)?", text)
+    if not match:
+        return None
+
+    pressure = float(match.group(1))
+    unit = match.group(2) or "dbar"
+    if unit == "bar":
+        pressure *= 10.0
+    return pressure
 
 
 def calculate_volume(mask_radius_pixels):
@@ -271,9 +306,9 @@ def process_profile(
     print(f"Processing {profile_name} (cruise={cruise}, pressure_unit={pressure_unit})")
     volume_per_image = calculate_volume(mask_radius)
 
-    image_files = list(Path(image_dir).glob("*.png"))
+    image_files = list(Path(image_dir).glob("*.png")) + list(Path(image_dir).glob("*.tif")) + list(Path(image_dir).glob("*.tiff"))
     if not image_files:
-        print(f"[WARN] No PNG images found in {image_dir}")
+        print(f"[WARN] No PNG/TIFF images found in {image_dir}")
         return empty_counts, empty_volumes, empty_raw
 
     depth_bin_labels = [
@@ -338,13 +373,10 @@ def process_profile(
         print(f"[WARN] Missing required columns in {tsv_path}")
         return empty_counts, volume_df, df
 
-    df["object_pressure"] = pd.to_numeric(df["object_pressure"], errors="coerce")
+    df["object_pressure"] = df["object_pressure"].apply(parse_pressure_value_to_dbar)
     df = df.dropna(subset=["object_pressure"])
 
-    if pressure_unit == "bar":
-        df["pressure_dbar"] = df["object_pressure"] * 10.0
-    else:
-        df["pressure_dbar"] = df["object_pressure"]
+    df["pressure_dbar"] = df["object_pressure"]
 
     if "object_esd" in df.columns:
         df["object_esd"] = pd.to_numeric(df["object_esd"], errors="coerce")
@@ -376,9 +408,15 @@ def process_profile(
     counts = counts.dropna(subset=["sampled_volume_L"])
     counts = counts[counts["sampled_volume_L"] > 0]
 
-    counts[["depth_bin_start_dbar", "depth_bin_end_dbar"]] = (
-        counts["depth_bin"].str.replace("m", "").str.split("-", expand=True).astype(float)
-    )
+    # Extract depth bin start and end, handling edge cases
+    split_result = counts["depth_bin"].str.replace("m", "").str.split("-", expand=True, n=1)
+    if split_result.shape[1] >= 2:
+        counts["depth_bin_start_dbar"] = pd.to_numeric(split_result[0], errors="coerce")
+        counts["depth_bin_end_dbar"] = pd.to_numeric(split_result[1], errors="coerce")
+    else:
+        # Fallback if split doesn't work as expected
+        counts["depth_bin_start_dbar"] = 0.0
+        counts["depth_bin_end_dbar"] = 0.0
 
     counts["profile"] = profile_name
     counts["cruise"] = cruise
@@ -413,6 +451,10 @@ def build_plot_bins_from_df(df, step_dbar):
 
 
 def make_profile_plot(df, raw_df, out_path, plot_bin_step):
+    if df.empty:
+        print(f"[WARN] No data to plot: {out_path}")
+        return
+    
     required_cols = {
         "depth_bin_start_dbar",
         "depth_bin_end_dbar",
@@ -658,6 +700,7 @@ def make_profile_plot(df, raw_df, out_path, plot_bin_step):
         )
     fig.subplots_adjust(left=0.1, right=0.9, top=0.93, bottom=0.12, hspace=0.6, wspace=0.3)
     fig.savefig(out_path, dpi=150)
+    print(f"Saved plot: {out_path}")
     plt.close(fig)
 
 
