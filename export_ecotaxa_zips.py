@@ -79,7 +79,40 @@ def export_profile_zips(results_folder, max_zip_size_mb=500):
     except Exception as e:
         print(f"[ERROR] Could not read TSV: {e}")
         return False
-    
+
+    # Fix pressure column: strip any unit suffix and ensure numeric type marker
+    for col in df.columns:
+        col_name = col[0] if isinstance(col, tuple) else col
+        if col_name == 'object_pressure':
+            df[col] = pd.to_numeric(
+                df[col].astype(str).str.replace(r'\s*d?bar\s*', '', regex=True),
+                errors='coerce'
+            )
+            if isinstance(col, tuple):
+                df.columns = pd.MultiIndex.from_tuples(
+                    [(c[0], '[f]') if c[0] == 'object_pressure' else c for c in df.columns],
+                    names=df.columns.names
+                )
+            break
+
+    # Remap model class names to current EcoTaxa taxonomy names
+    ecotaxa_taxon_map = {
+        'copepoda': 'Copepoda<Multicrustacea',
+        'appendicularia': 'Appendicularia<Tunicata',
+        'cnidaria<metazoa': 'Cnidaria<Animalia',
+        'chaetognatha': 'Chaetognatha<Animalia',
+        'ctenophora_metazoa': 'Ctenophora<Animalia',
+    }
+    annotation_col_names = [
+        'object_annotation_category', 'object_annotation_category_2',
+        'object_annotation_category_3', 'object_annotation_category_4',
+        'object_annotation_category_5',
+    ]
+    for col in df.columns:
+        col_name = col[0] if isinstance(col, tuple) else col
+        if col_name in annotation_col_names:
+            df[col] = df[col].replace(ecotaxa_taxon_map)
+
     # Create ZIPs
     try:
         create_ecotaxa_zips(
