@@ -41,4 +41,18 @@
     "M202": "/path/to/M202/logs",
     "SO308": "/path/to/SO308/logs"
   }
+  ,
+  "ecotaxa": {
+    "host": "https://ecotaxa.obs-vlfr.fr/api",
+    "username": "vdausmann@geomar.de",
+    "password": "",
+    "ftp": {
+      "host": "plankton.obs-vlfr.fr",
+      "username": "ftp_plankton",
+      "password": "Pl@nkt0n4Ecotaxa",
+      "remote_dir": "/plankton_rw/ftp_plankton/Ecotaxa_Data_to_import",
+      "subdir": "GEOMAR",
+      "local_root": "/media/veit/T710_data"
+    }
+  }
 }

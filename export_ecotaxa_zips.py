@@ -104,8 +104,9 @@ def main():
         description="Export EcoTaxa ZIP files from existing processed profiles."
     )
     parser.add_argument(
-        "results_root",
-        help="Path to results root or a single profile Results folder"
+        "results_roots",
+        nargs="+",
+        help="One or more paths to results roots or individual profile Results folders"
     )
     parser.add_argument(
         "--max-zip-size",
@@ -113,25 +114,34 @@ def main():
         default=500,
         help="Maximum ZIP file size in MB (default: 500)"
     )
-    
+
     args = parser.parse_args()
-    
-    if not os.path.exists(args.results_root):
-        print(f"ERROR: {args.results_root} not found")
-        sys.exit(1)
-    
-    profile_dirs = find_profile_results(args.results_root)
+
+    profile_dirs = []
+    for root in args.results_roots:
+        if not os.path.exists(root):
+            print(f"ERROR: {root} not found")
+            sys.exit(1)
+        found = find_profile_results(root)
+        if not found:
+            print(f"[WARN] No profile Results folders found in {root}")
+        profile_dirs.extend(found)
+
+    # Deduplicate while preserving order
+    seen = set()
+    profile_dirs = [p for p in profile_dirs if not (p in seen or seen.add(p))]
+
     if not profile_dirs:
         print("ERROR: No profile Results folders found.")
         sys.exit(1)
-    
+
     print(f"Found {len(profile_dirs)} profile(s)")
-    
+
     success_count = 0
     for profile_dir in profile_dirs:
         if export_profile_zips(profile_dir, max_zip_size_mb=args.max_zip_size):
             success_count += 1
-    
+
     print(f"\nComplete: {success_count}/{len(profile_dirs)} profiles exported")
     sys.exit(0 if success_count == len(profile_dirs) else 1)
 
