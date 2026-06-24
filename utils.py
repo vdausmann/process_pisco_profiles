@@ -1595,12 +1595,31 @@ def rename_for_ecotaxa(df, mapping_csv=None, sep="\t", sample_profile_id=None, p
         df.rename(columns=rename_mapping, inplace=True)
         df['object_depth_max'] = df['object_depth_min']
         df['sample_id'] = sample_profile_id
-        
+
+        # Strip any trailing unit string (e.g. "dbar", "bar") and force numeric
+        if 'object_pressure' in df.columns:
+            df['object_pressure'] = pd.to_numeric(
+                df['object_pressure'].astype(str).str.replace(r'\s*d?bar\s*', '', regex=True),
+                errors='coerce'
+            )
+
         # Ensure 'object_time' has 8 elements by padding with leading zeros
         df['object_time'] = df['object_time'].apply(lambda x: x.zfill(8) if isinstance(x, str) else x)
 
         # Define annotation columns
         annotation_columns = ['object_annotation_category', 'object_annotation_category_2', 'object_annotation_category_3', 'object_annotation_category_4', 'object_annotation_category_5']
+
+        # Remap model class names to current EcoTaxa taxonomy names
+        ecotaxa_taxon_map = {
+            'copepoda': 'Copepoda<Multicrustacea',
+            'appendicularia': 'Appendicularia<Tunicata',
+            'cnidaria<metazoa': 'Cnidaria<Animalia',
+            'chaetognatha': 'Chaetognatha<Animalia',
+            'ctenophora_metazoa': 'Ctenophora<Animalia',
+        }
+        for col in annotation_columns:
+            if col in df.columns:
+                df[col] = df[col].replace(ecotaxa_taxon_map)
 
         # Find rows with empty cells in annotation columns
         rows_to_drop = df[annotation_columns].isnull().any(axis=1)
@@ -1684,6 +1703,30 @@ def rename_for_ecotaxa(df, mapping_csv=None, sep="\t", sample_profile_id=None, p
         if "object_depth_min" in df.columns:
             df['object_depth_max'] = df['object_depth_min']
         df['sample_id'] = sample_profile_id
+
+        # Strip any trailing unit string (e.g. "dbar", "bar") and force numeric
+        if 'object_pressure' in df.columns:
+            df['object_pressure'] = pd.to_numeric(
+                df['object_pressure'].astype(str).str.replace(r'\s*d?bar\s*', '', regex=True),
+                errors='coerce'
+            )
+
+        # Remap model class names to current EcoTaxa taxonomy names
+        ecotaxa_taxon_map = {
+            'copepoda': 'Copepoda<Multicrustacea',
+            'appendicularia': 'Appendicularia<Tunicata',
+            'cnidaria<metazoa': 'Cnidaria<Animalia',
+            'chaetognatha': 'Chaetognatha<Animalia',
+            'ctenophora_metazoa': 'Ctenophora<Animalia',
+        }
+        annotation_cols = [
+            'object_annotation_category', 'object_annotation_category_2',
+            'object_annotation_category_3', 'object_annotation_category_4',
+            'object_annotation_category_5',
+        ]
+        for col in annotation_cols:
+            if col in df.columns:
+                df[col] = df[col].replace(ecotaxa_taxon_map)
 
         # Keep only specified columns after renaming
         columns_to_keep = [

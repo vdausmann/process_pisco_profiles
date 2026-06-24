@@ -1,0 +1,1 @@
+git+https://github.com/ecotaxa/ecotaxa_py_client.git
