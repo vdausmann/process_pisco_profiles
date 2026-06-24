@@ -2055,7 +2055,34 @@ def create_ecotaxa_zips(output_folder, df, profile_name, max_zip_size_mb=500, co
         
         # Convert MultiIndex columns back to single level for processing
         df_single = df.copy()
-        df_single.columns = df_single.columns.get_level_values('header')
+        if isinstance(df_single.columns, pd.MultiIndex):
+            df_single.columns = df_single.columns.get_level_values(0)
+
+        # Fix pressure: strip unit suffixes and cast to float
+        if 'object_pressure' in df_single.columns:
+            df_single['object_pressure'] = pd.to_numeric(
+                df_single['object_pressure'].astype(str).str.replace(r'\s*d?bar\s*', '', regex=True),
+                errors='coerce'
+            )
+
+        # Derive object_depth_min from pressure in bar (depth_m = pressure_bar * 10 - 10)
+        if 'object_pressure' in df_single.columns:
+            df_single['object_depth_min'] = (df_single['object_pressure'] * 10 - 10).round(3)
+            df_single['object_depth_max'] = df_single['object_depth_min']
+
+        # Remap model class names to current EcoTaxa taxonomy names
+        _ecotaxa_taxon_map = {
+            'copepoda': 'Copepoda<Multicrustacea',
+            'appendicularia': 'Appendicularia<Tunicata',
+            'cnidaria<metazoa': 'Cnidaria<Animalia',
+            'chaetognatha': 'Chaetognatha<Animalia',
+            'ctenophora_metazoa': 'Ctenophora<Animalia',
+        }
+        for _col in ['object_annotation_category', 'object_annotation_category_2',
+                     'object_annotation_category_3', 'object_annotation_category_4',
+                     'object_annotation_category_5']:
+            if _col in df_single.columns:
+                df_single[_col] = df_single[_col].replace(_ecotaxa_taxon_map)
 
         # Get source folder and images
         source_folder = None
