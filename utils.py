@@ -32,6 +32,15 @@ from sklearn.preprocessing import StandardScaler
 from tqdm import tqdm
 import logging
 
+# Mapping from model output class names to current EcoTaxa taxonomy names.
+ECOTAXA_TAXON_MAP = {
+    'Copepoda': 'Copepoda<Multicrustacea',
+    'Appendicularia': 'Appendicularia<Tunicata',
+    'Cnidaria<Metazoa': 'Cnidaria<Animalia',
+    'Chaetognatha': 'Chaetognatha<Animalia',
+    'Ctenophora_Metazoa': 'Ctenophora<Animalia',
+}
+
 import torch
 from torch.utils.data import DataLoader
 from transformers import ViTForImageClassification
@@ -1610,13 +1619,7 @@ def rename_for_ecotaxa(df, mapping_csv=None, sep="\t", sample_profile_id=None, p
         annotation_columns = ['object_annotation_category', 'object_annotation_category_2', 'object_annotation_category_3', 'object_annotation_category_4', 'object_annotation_category_5']
 
         # Remap model class names to current EcoTaxa taxonomy names
-        ecotaxa_taxon_map = {
-            'copepoda': 'Copepoda<Multicrustacea',
-            'appendicularia': 'Appendicularia<Tunicata',
-            'cnidaria<metazoa': 'Cnidaria<Animalia',
-            'chaetognatha': 'Chaetognatha<Animalia',
-            'ctenophora_metazoa': 'Ctenophora<Animalia',
-        }
+        ecotaxa_taxon_map = ECOTAXA_TAXON_MAP
         for col in annotation_columns:
             if col in df.columns:
                 df[col] = df[col].replace(ecotaxa_taxon_map)
@@ -1712,13 +1715,7 @@ def rename_for_ecotaxa(df, mapping_csv=None, sep="\t", sample_profile_id=None, p
             )
 
         # Remap model class names to current EcoTaxa taxonomy names
-        ecotaxa_taxon_map = {
-            'copepoda': 'Copepoda<Multicrustacea',
-            'appendicularia': 'Appendicularia<Tunicata',
-            'cnidaria<metazoa': 'Cnidaria<Animalia',
-            'chaetognatha': 'Chaetognatha<Animalia',
-            'ctenophora_metazoa': 'Ctenophora<Animalia',
-        }
+        ecotaxa_taxon_map = ECOTAXA_TAXON_MAP
         annotation_cols = [
             'object_annotation_category', 'object_annotation_category_2',
             'object_annotation_category_3', 'object_annotation_category_4',
@@ -2071,18 +2068,11 @@ def create_ecotaxa_zips(output_folder, df, profile_name, max_zip_size_mb=500, co
             df_single['object_depth_max'] = df_single['object_depth_min']
 
         # Remap model class names to current EcoTaxa taxonomy names
-        _ecotaxa_taxon_map = {
-            'copepoda': 'Copepoda<Multicrustacea',
-            'appendicularia': 'Appendicularia<Tunicata',
-            'cnidaria<metazoa': 'Cnidaria<Animalia',
-            'chaetognatha': 'Chaetognatha<Animalia',
-            'ctenophora_metazoa': 'Ctenophora<Animalia',
-        }
         for _col in ['object_annotation_category', 'object_annotation_category_2',
                      'object_annotation_category_3', 'object_annotation_category_4',
                      'object_annotation_category_5']:
             if _col in df_single.columns:
-                df_single[_col] = df_single[_col].replace(_ecotaxa_taxon_map)
+                df_single[_col] = df_single[_col].replace(ECOTAXA_TAXON_MAP)
 
         # Get source folder and images
         source_folder = None
