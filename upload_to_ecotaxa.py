@@ -330,14 +330,13 @@ def main():
         if server_path is None:
             try:
                 # Prefer the TUS upload path for large archives.
-                server_path = tus_upload(host, token, filename, str(filename), tag=args.tag)
+                server_path = tus_upload(host, token, filename, filename.name, tag=args.tag)
                 print("Uploaded via TUS to server path:", server_path)
             except (ApiException, urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError) as e:
                 print("TUS upload failed, trying EcoTaxa client upload:", e)
 
                 try:
-                    # pass the local filename path so the generated client can open it
-                    server_path = files_api.post_user_file(file=str(filename), path=str(filename), tag=args.tag)
+                    server_path = files_api.post_user_file(file=str(filename), path=filename.name, tag=args.tag)
                     print("Uploaded to server path:", server_path)
                 except ApiException as client_err:
                     if getattr(client_err, "status", None) != 404:
@@ -347,7 +346,7 @@ def main():
                     # Fallback for the live EcoTaxa API, which exposes upload as /user_files/.
                     base = host.rstrip("/")
                     token = configuration.access_token
-                    remote_name = str(filename)
+                    remote_name = filename.name
                     attempted = []
                     server_path = None
                     for upload_url in (f"{base}/user_files/", f"{base}/user_files", f"{base}/my_files/", f"{base}/my_files"):
