@@ -356,16 +356,19 @@ def main():
                             print(f"Uploaded via fallback URL {upload_url}:", server_path)
                             break
                         except urllib.error.HTTPError as http_err:
-                            if http_err.code != 404:
-                                raise
-                        except urllib.error.URLError:
-                            raise
+                            print(f"  {upload_url} → HTTP {http_err.code}: {http_err.reason}")
+                            if http_err.code == 404:
+                                continue  # try next URL
+                            # 5xx errors mean the server is having problems; no point trying more URLs
+                            print("EcoTaxa server error — try again later or wait for FTP to come back up.")
+                            sys.exit(4)
+                        except urllib.error.URLError as url_err:
+                            print(f"  {upload_url} → connection error: {url_err.reason}")
+                            sys.exit(4)
 
                     if server_path is None:
-                        print("File upload failed: 404 from EcoTaxa upload endpoint")
-                        print("Tried:")
-                        for url in attempted:
-                            print(" -", url)
+                        print("File upload failed: all upload URLs returned 404.")
+                        print("Tried:", ", ".join(attempted))
                         print("FTP fallback was tried first" if (ftp_host and ftp_user and ftp_pass) else "FTP fallback not configured")
                         sys.exit(4)
 
