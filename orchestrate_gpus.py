@@ -42,6 +42,7 @@ from datetime import datetime
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROCESS_SCRIPT = os.path.join(HERE, "process_pisco_profiles.py")
+PLOT_SCRIPT = os.path.join(HERE, "calc_abundance_biovolume_pisco.py")
 
 
 def log(msg):
@@ -181,6 +182,9 @@ def main():
     parser.add_argument("--image-ext", default=".png", help="Image extension for size estimate")
     parser.add_argument("--no-lpt", action="store_true",
                         help="Do not reorder profiles largest-first")
+    parser.add_argument("--plots", action="store_true",
+                        help="After the queue drains, run calc_abundance_biovolume_pisco.py "
+                             "on the output root to generate abundance/biovolume plots.")
     args, passthrough = parser.parse_known_args()
 
     # '--' separator: argparse leaves it in passthrough; drop a leading one.
@@ -248,6 +252,19 @@ def main():
         for r in bad:
             log(f"  - {r['profile']} (GPU{r['gpu']}, rc={r['rc']})")
     log("=" * 60)
+
+    # Optional: generate abundance/biovolume plots for the whole output root.
+    if args.plots and ok:
+        plot_dir = os.path.join(args.output, "plots")
+        os.makedirs(plot_dir, exist_ok=True)
+        log(f"Generating abundance/biovolume plots -> {plot_dir}")
+        rc = subprocess.call(
+            [sys.executable, PLOT_SCRIPT, args.output, "--output-dir", plot_dir]
+        )
+        log(f"Plot generation finished (rc={rc})")
+    elif args.plots:
+        log("Skipping plots: no profiles completed successfully.")
+
     return 1 if bad else 0
 
 
