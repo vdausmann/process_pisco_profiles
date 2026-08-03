@@ -2118,15 +2118,18 @@ def create_ecotaxa_zips(output_folder, df, profile_name, max_zip_size_mb=500, co
             # Write data rows
             df_ET.to_csv(metadata_path, sep='\t', index=False, mode='a', header=False)
 
-            # Create zip file from original folder
+            # Create zip: include ONLY the metadata TSV and the crops it
+            # references (groups[0]). The source folder also contains crops that
+            # were filtered out during post-analysis (TAG events / particle-count
+            # rejects) and have no metadata row — zipping the whole folder would
+            # upload those redundantly, so we add just the referenced images to
+            # match the multi-group path's exclusion behavior.
             zip_path = os.path.join(output_folder, f"{crop_type}.zip")
             with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                # Add all files from source folder
-                for file in os.listdir(source_folder):
-                    file_path = os.path.join(source_folder, file)
-                    if os.path.isfile(file_path):  # Only add files, not directories
-                        arcname = os.path.basename(file_path)
-                        zipf.write(file_path, arcname)
+                zipf.write(metadata_path, os.path.basename(metadata_path))
+                for img_path in groups[0]:
+                    if os.path.isfile(img_path):
+                        zipf.write(img_path, os.path.basename(img_path))
             
             print(f"Created zip file from source folder: {zip_path}")
 
