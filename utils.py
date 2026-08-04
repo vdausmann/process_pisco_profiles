@@ -2055,6 +2055,25 @@ def create_ecotaxa_zips(output_folder, df, profile_name, max_zip_size_mb=500, co
         if isinstance(df_single.columns, pd.MultiIndex):
             df_single.columns = df_single.columns.get_level_values(0)
 
+        # object_date/object_time must be written as zero-padded text (YYYYMMDD /
+        # HHMMSS). Re-reading the TSV numifies them, dropping leading zeros, so a
+        # morning cast like 065300 becomes 65300 and EcoTaxa rejects it as an
+        # invalid time. Re-pad from the integer value.
+        def _zpad(series, width):
+            def f(v):
+                s = str(v).strip()
+                if s in ('', 'nan', 'None'):
+                    return s
+                try:
+                    return str(int(float(s))).zfill(width)
+                except (ValueError, TypeError):
+                    return s
+            return series.apply(f)
+        if 'object_date' in df_single.columns:
+            df_single['object_date'] = _zpad(df_single['object_date'], 8)
+        if 'object_time' in df_single.columns:
+            df_single['object_time'] = _zpad(df_single['object_time'], 6)
+
         # Fix pressure: strip unit suffixes and cast to float
         if 'object_pressure' in df_single.columns:
             df_single['object_pressure'] = pd.to_numeric(
