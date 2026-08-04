@@ -269,9 +269,10 @@ class M181Adapter(CruiseAdapter):
     def parse_profile(self, profile_name: str, profile_path: str) -> ProfileInfo:
         lat, lon = ap.extract_lat_lon_from_profile(profile_name)
         
-        # Extract profile_id from M181-XXX-X part
+        # Sample id = cruise + CTD cast (e.g. "M181_CTD-058"), not the ship-station
+        # part ("216-1"), so EcoTaxa samples read as the CTD profiles.
         try:
-            profile_id = profile_name.split('_')[0].split('-')[1] + '-' + profile_name.split('_')[0].split('-')[2]
+            profile_id = f"{self.cruise_name}_{profile_name.split('_')[1]}"
         except:
             profile_id = profile_name
         
