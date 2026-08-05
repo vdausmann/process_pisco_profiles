@@ -813,11 +813,11 @@ def process_profile_postanalysis(
                 try:
                     annotation_col = ('object_annotation_category', '[t]')
                     
-                    # Non-living particles
-                    df_ET_nonliving = df_ET[df_ET[annotation_col] == 'non-living'].copy()
-                    
+                    # Non-living particles (classifier label is 'not-living')
+                    df_ET_nonliving = df_ET[df_ET[annotation_col] == 'not-living'].copy()
+
                     # All other classes (living + unknown)
-                    df_ET_other = df_ET[df_ET[annotation_col] != 'non-living'].copy()
+                    df_ET_other = df_ET[df_ET[annotation_col] != 'not-living'].copy()
                     
                     logger.log(f"  Non-living particles: {len(df_ET_nonliving)}")
                     logger.log(f"  Other classes (living + unknown): {len(df_ET_other)}")
