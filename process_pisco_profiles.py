@@ -53,6 +53,14 @@ for module_name in ("utils", "analyze_profiles_seavision", "pisco_profile_utils"
 DEFAULT_BINARY_MODEL_DIR = '/home/veit/PIScO_dev/ViT_custom_size_sensitive_binary/best_model'
 DEFAULT_LIVING_MODEL_DIR = '/home/veit/PIScO_dev/ViT_custom_size_sensitive_v5/best_model'
 
+# Classifier category names that EcoTaxa has deprecated -> accepted taxon name.
+# Objects annotated with a deprecated taxon cannot be validated in EcoTaxa
+# (HTTP 500 "Cannot classify or validate deprecated taxa"), so remap at export.
+DEPRECATED_TAXON_REMAP: Dict[str, str] = {
+    'Asteroidea larvae': 'Asteroidea',
+    'Noctiluca sp.': 'Noctiluca',
+}
+
 DEFAULT_CTD_CONFIGS: Dict[str, Dict[str, str]] = {
     "SO298": {"dir": "/mnt/filer/SO298/SO298-CTD_UVP_ETC/SO298-CTD/calibrated/", "prefix": "son_298_1_"},
     "MSM126": {"dir": "/mnt/filer/MSM126/MSM126-Data-UVP-CTD-ADCP/CTD/msm_126_1_ctd", "prefix": "msm_126_1_"},
@@ -791,7 +799,18 @@ def process_profile_postanalysis(
         
         # Prepare EcoTaxa metadata for all particles
         df_ET = ap.rename_for_ecotaxa(df, sample_profile_id=profile_info.profile_id, predicted=predict_ViT).copy()
-        
+
+        # Remap deprecated EcoTaxa taxa to their accepted names so uploads are validatable
+        try:
+            annotation_col = ('object_annotation_category', '[t]')
+            if annotation_col in df_ET.columns:
+                before = df_ET[annotation_col].isin(DEPRECATED_TAXON_REMAP).sum()
+                if before:
+                    df_ET[annotation_col] = df_ET[annotation_col].replace(DEPRECATED_TAXON_REMAP)
+                    logger.log(f"  Remapped {before} deprecated-taxon annotations to accepted names")
+        except Exception as e:
+            logger.log(f"  Could not remap deprecated taxa: {e}")
+
         if predict_ViT:
             try:
                 annotation_col = ('object_annotation_category', '[t]')
