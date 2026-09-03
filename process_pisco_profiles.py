@@ -53,6 +53,33 @@ for module_name in ("utils", "analyze_profiles_seavision", "pisco_profile_utils"
 DEFAULT_BINARY_MODEL_DIR = '/home/veit/PIScO_dev/ViT_custom_size_sensitive_binary/best_model'
 DEFAULT_LIVING_MODEL_DIR = '/home/veit/PIScO_dev/ViT_custom_size_sensitive_v5/best_model'
 
+# Root under which dual-ViT training runs live, as `ViT_<run>_binary` / `ViT_<run>_multiclass`.
+DUALVIT_ROOT = '/home/veit/PIScO_dev'
+
+
+def resolve_dualvit_run(spec, root=DUALVIT_ROOT):
+    """Resolve a dual-ViT run to its (binary, living) model directories.
+
+    `spec` is either a run name (``ATAIIR2604_NorthSea`` ->
+    ``<root>/ViT_ATAIIR2604_NorthSea_{binary,multiclass}``) or an absolute base
+    path (``/x/ViT_myrun`` -> ``/x/ViT_myrun_{binary,multiclass}``). The
+    ``best_model`` subdirectory is preferred when present.
+    """
+    base = spec if os.path.isabs(spec) else os.path.join(root, f"ViT_{spec}")
+    resolved = []
+    for suffix in ("binary", "multiclass"):
+        cand = f"{base}_{suffix}"
+        best = os.path.join(cand, "best_model")
+        if os.path.isdir(best):
+            resolved.append(best)
+        elif os.path.isdir(cand):
+            resolved.append(cand)
+        else:
+            raise FileNotFoundError(
+                f"--dualvit-model '{spec}': expected a model directory at {best}"
+            )
+    return resolved[0], resolved[1]
+
 # Classifier category names that EcoTaxa has deprecated -> accepted taxon name.
 # Objects annotated with a deprecated taxon cannot be validated in EcoTaxa
 # (HTTP 500 "Cannot classify or validate deprecated taxa"), so remap at export.
@@ -531,7 +558,15 @@ def process_profile_postanalysis(
         
         logger.log(f"  Cruise: {profile_info.cruise}")
         logger.log(f"  Profile ID: {profile_info.profile_id}")
-        logger.log(f"  Coordinates: {profile_info.latitude:.4f}, {profile_info.longitude:.4f}")
+        # lat/lon are optional: GenericCruiseAdapter leaves them None for cruises whose
+        # profile names carry no coordinates (e.g. ATAIR '20260422-2051'). Formatting None
+        # with :.4f raised TypeError here and aborted the WHOLE post-analysis (no ViT, no
+        # EcoTaxa TSV, no zips) for an otherwise successful segmentation.
+        if profile_info.latitude is None or profile_info.longitude is None:
+            logger.log(f"  Coordinates: unavailable (lat={profile_info.latitude}, "
+                       f"lon={profile_info.longitude})")
+        else:
+            logger.log(f"  Coordinates: {profile_info.latitude:.4f}, {profile_info.longitude:.4f}")
         logger.log(f"  Pressure unit: {profile_info.pressure_unit}")
         logger.log(f"  Export ZIP: {export_zip}")
         
@@ -1514,6 +1549,15 @@ Examples:
     )
 
     parser.add_argument(
+        '--dualvit-model',
+        type=str,
+        help=('Dual-ViT run name (e.g. ATAIIR2604_NorthSea) or absolute base path. '
+              'Shorthand that sets BOTH model dirs from '
+              '<root>/ViT_<run>_{binary,multiclass}/best_model. '
+              'An explicitly passed --binary-model-dir / --living-model-dir still wins.')
+    )
+
+    parser.add_argument(
         '--binary-model-dir',
         type=str,
         default=DEFAULT_BINARY_MODEL_DIR,
@@ -1596,6 +1640,21 @@ Examples:
                 args.source = source_default
         except Exception as e:
             parser.error(f"Failed to load config file {args.config}: {e}")
+
+    # --dualvit-model is a shorthand for the two model dirs; an explicitly passed
+    # per-model flag still takes precedence over it.
+    if args.dualvit_model:
+        try:
+            dv_binary, dv_living = resolve_dualvit_run(args.dualvit_model)
+        except Exception as e:
+            parser.error(str(e))
+        if '--binary-model-dir' not in sys.argv:
+            binary_model_dir = dv_binary
+        if '--living-model-dir' not in sys.argv:
+            living_model_dir = dv_living
+        print(f"Dual-ViT run '{args.dualvit_model}':")
+        print(f"  binary model: {binary_model_dir}")
+        print(f"  living model: {living_model_dir}")
 
     try:
         binary_model_dir = resolve_model_dir(
