@@ -56,29 +56,51 @@ DEFAULT_LIVING_MODEL_DIR = '/home/veit/PIScO_dev/ViT_custom_size_sensitive_v5/be
 # Root under which dual-ViT training runs live, as `ViT_<run>_binary` / `ViT_<run>_multiclass`.
 DUALVIT_ROOT = '/home/veit/PIScO_dev'
 
+# Hugging Face owner to fall back to when a --dualvit-model run has not been
+# trained on this machine. Override with PISCO_DUALVIT_HF_NAMESPACE.
+DUALVIT_HF_NAMESPACE = 'Veit'
 
-def resolve_dualvit_run(spec, root=DUALVIT_ROOT):
-    """Resolve a dual-ViT run to its (binary, living) model directories.
 
-    `spec` is either a run name (``ATAIIR2604_NorthSea`` ->
-    ``<root>/ViT_ATAIIR2604_NorthSea_{binary,multiclass}``) or an absolute base
-    path (``/x/ViT_myrun`` -> ``/x/ViT_myrun_{binary,multiclass}``). The
-    ``best_model`` subdirectory is preferred when present.
+def resolve_dualvit_run(spec, root=DUALVIT_ROOT, hf_namespace=None):
+    """Resolve a dual-ViT run to its (binary, living) model locations.
+
+    Returns ``((binary_dir, living_dir), (binary_repo, living_repo))``; exactly
+    one side of each pair is populated. Local training output wins, so the
+    machine that trained a run keeps using it directly. A run that is not
+    present locally falls back to the matching Hugging Face repos, which is what
+    lets the same flag work on a machine that never trained the model.
+
+    `spec` may be a run name (``ATAIIR2604_NorthSea``), an absolute base path
+    (``/x/ViT_myrun``, local only), or an explicit ``owner/run`` to address
+    Hugging Face directly.
     """
+    hf_namespace = hf_namespace or os.environ.get(
+        "PISCO_DUALVIT_HF_NAMESPACE", DUALVIT_HF_NAMESPACE
+    )
+
+    # "owner/run" always means Hugging Face
+    if "/" in spec and not os.path.isabs(spec):
+        owner, _, run = spec.rpartition("/")
+        return (None, None), (f"{owner}/{run}_binary", f"{owner}/{run}_multiclass")
+
     base = spec if os.path.isabs(spec) else os.path.join(root, f"ViT_{spec}")
-    resolved = []
+    dirs = []
     for suffix in ("binary", "multiclass"):
         cand = f"{base}_{suffix}"
         best = os.path.join(cand, "best_model")
-        if os.path.isdir(best):
-            resolved.append(best)
-        elif os.path.isdir(cand):
-            resolved.append(cand)
-        else:
-            raise FileNotFoundError(
-                f"--dualvit-model '{spec}': expected a model directory at {best}"
-            )
-    return resolved[0], resolved[1]
+        dirs.append(best if os.path.isdir(best)
+                    else (cand if os.path.isdir(cand) else None))
+    if all(dirs):
+        return (dirs[0], dirs[1]), (None, None)
+
+    # An absolute path names a location, not a run, so there is nothing to map.
+    if os.path.isabs(spec):
+        raise FileNotFoundError(
+            f"--dualvit-model '{spec}': expected model directories at "
+            f"{base}_binary and {base}_multiclass"
+        )
+    return (None, None), (f"{hf_namespace}/{spec}_binary",
+                          f"{hf_namespace}/{spec}_multiclass")
 
 # Classifier category names that EcoTaxa has deprecated -> accepted taxon name.
 # Objects annotated with a deprecated taxon cannot be validated in EcoTaxa
@@ -1552,9 +1574,12 @@ Examples:
         '--dualvit-model',
         type=str,
         help=('Dual-ViT run name (e.g. ATAIIR2604_NorthSea) or absolute base path. '
-              'Shorthand that sets BOTH model dirs from '
-              '<root>/ViT_<run>_{binary,multiclass}/best_model. '
-              'An explicitly passed --binary-model-dir / --living-model-dir still wins.')
+              'Shorthand that sets BOTH models from '
+              '<root>/ViT_<run>_{binary,multiclass}/best_model, falling back to the '
+              'Hugging Face repos <owner>/<run>_{binary,multiclass} when the run was '
+              'not trained on this machine (owner from PISCO_DUALVIT_HF_NAMESPACE, or '
+              'pass the run as owner/run). An explicitly passed '
+              '--binary-model-dir / --living-model-dir still wins.')
     )
 
     parser.add_argument(
@@ -1645,16 +1670,23 @@ Examples:
     # per-model flag still takes precedence over it.
     if args.dualvit_model:
         try:
-            dv_binary, dv_living = resolve_dualvit_run(args.dualvit_model)
+            (dv_binary, dv_living), (hf_binary, hf_living) = resolve_dualvit_run(
+                args.dualvit_model
+            )
         except Exception as e:
             parser.error(str(e))
-        if '--binary-model-dir' not in sys.argv:
+        if dv_binary and '--binary-model-dir' not in sys.argv:
             binary_model_dir = dv_binary
-        if '--living-model-dir' not in sys.argv:
+        if dv_living and '--living-model-dir' not in sys.argv:
             living_model_dir = dv_living
-        print(f"Dual-ViT run '{args.dualvit_model}':")
-        print(f"  binary model: {binary_model_dir}")
-        print(f"  living model: {living_model_dir}")
+        if hf_binary and not binary_model_hf:
+            binary_model_hf = hf_binary
+        if hf_living and not living_model_hf:
+            living_model_hf = hf_living
+        src = ' (Hugging Face)' if hf_binary else ' (local)'
+        print(f"Dual-ViT run '{args.dualvit_model}'{src}:")
+        print(f"  binary model: {binary_model_hf or binary_model_dir}")
+        print(f"  living model: {living_model_hf or living_model_dir}")
 
     try:
         binary_model_dir = resolve_model_dir(
