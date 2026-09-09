@@ -1,0 +1,446 @@
+#!/usr/bin/env python3
+"""Export EcoTaxa import archives from the C++ segmenter's HDF5 results.
+
+The old Python pipeline writes per-frame CSVs plus crop PNGs on disk, which
+``process_pisco_profiles.py`` turns into an EcoTaxa archive. The C++ segmenter
+route produces neither: object crops, their masks and their bounding boxes all
+live inside ``result.h5``. This script is the missing half — it reads that file
+and emits exactly the same archive shape the EcoTaxa importer already accepts,
+so ``upload_to_ecotaxa.py`` works on the result unchanged.
+
+Input is ``result.h5``, written by ``Mode::OBJECT_EXTRACTION``:
+
+    /                      @imageHeight @imageWidth @sourcePath
+    /<frame name>/         one group per source frame
+        boundingBoxX/Y/W/H (N,) int32   position and size in the full frame
+        offsets            (N,) int32   start of each crop in the flat arrays
+        cropPixelData      (M,) uint8   all crops concatenated, row-major
+        maskPixelData      (M,) uint8   segmentation masks, same layout
+
+Crop *i* is ``cropPixelData[offsets[i] : offsets[i] + W*H].reshape(H, W)``.
+
+Two things make this better than exporting from the old pipeline's PNGs:
+
+* If ``pisco_deconvolve`` ran before extraction, the crops in ``result.h5`` are
+  already deconvolved — deconvolution rewrites the correction checkpoints in
+  place and extraction reads those.
+* ``maskPixelData`` is the segmenter's own mask, so morphometrics are computed
+  from what the segmenter actually detected. The old pipeline had to re-derive a
+  mask by re-thresholding the saved crop and keeping the largest contour.
+
+Deliberately free of pandas and of ``utils.py`` (which imports torch and
+transformers at module scope): an export job should not drag a GPU stack in.
+The few shared constants below are duplicated for that reason.
+
+Usage:
+    python export_hdf5_to_ecotaxa.py /path/to/results/result.h5 -o /path/to/out
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import os
+import re
+import sys
+import zipfile
+from pathlib import Path
+
+import h5py
+import numpy as np
+from PIL import Image
+from skimage import measure
+
+# --- constants shared with utils.py, duplicated to keep this import-light ----
+
+# Mapping from model output class names to current EcoTaxa taxonomy names.
+ECOTAXA_TAXON_MAP = {
+    "Copepoda": "Copepoda<Multicrustacea",
+    "Appendicularia": "Appendicularia<Tunicata",
+    "Cnidaria<Metazoa": "Cnidaria<Animalia",
+    "Chaetognatha": "Chaetognatha<Animalia",
+    "Ctenophora_Metazoa": "Ctenophora<Animalia",
+}
+
+# PIScO2 optics at 2560x2560: 4.5 µm/px sensor, 400/160 inverse magnification,
+# binning 2. Keep in sync with area_to_esd() in utils.py.
+PIXEL_SIZE_UM = 4.5 * (400 / 160) * 2
+
+# Standard atmosphere in dbar, subtracted to turn absolute pressure into depth.
+ATM_DBAR = 10.1325
+
+
+def area_to_esd(area_px: float) -> float:
+    """Equivalent spherical diameter in µm from an area in pixels."""
+    return 2.0 * np.sqrt(area_px * PIXEL_SIZE_UM**2 / np.pi)
+
+
+# --- frame name parsing -----------------------------------------------------
+
+# e.g. M202_028-02_PISCO2_0009.94dbar-38.58N-027.32W-22.18C_20240725-05400026
+_FRAME_RE = re.compile(
+    r"^(?P<cruise>[^_]+)_(?P<dship_id>[^_]+)_(?P<instrument>[^_]+)_"
+    r"(?P<meta>[^_]+)_(?P<datetime>\d{8}-\d+)$"
+)
+_META_RE = re.compile(
+    r"^(?P<pressure>[\d.]+)(?P<punit>d?bar)"
+    r"(?:-(?P<lat>[\d.]+)(?P<latdir>[NS])-(?P<lon>[\d.]+)(?P<londir>[EW]))?"
+    r"(?:-(?P<temp>[\d.]+)C)?$"
+)
+
+
+def parse_frame_name(name: str) -> dict:
+    """Pull acquisition metadata out of a frame group name.
+
+    The segmenter names groups after the source frame, which encodes pressure,
+    position, temperature and timestamp. Anything that does not match is
+    returned with empty fields rather than raising — a profile with an
+    unexpected naming scheme should still export its images.
+    """
+    out = {
+        "cruise": "", "dship_id": "", "instrument": "",
+        "pressure": None, "lat": None, "lon": None, "temperature": None,
+        "date": "", "time": "",
+    }
+    m = _FRAME_RE.match(name)
+    if not m:
+        return out
+
+    out["cruise"] = m.group("cruise")
+    out["dship_id"] = m.group("dship_id")
+    out["instrument"] = m.group("instrument")
+
+    mm = _META_RE.match(m.group("meta"))
+    if mm:
+        pressure = float(mm.group("pressure"))
+        if mm.group("punit") == "bar":  # some cruises write bar, not dbar
+            pressure *= 10.0
+        out["pressure"] = pressure
+        if mm.group("lat"):
+            lat = float(mm.group("lat"))
+            lon = float(mm.group("lon"))
+            out["lat"] = -lat if mm.group("latdir") == "S" else lat
+            out["lon"] = -lon if mm.group("londir") == "W" else lon
+        if mm.group("temp"):
+            out["temperature"] = float(mm.group("temp"))
+
+    date_part, _, time_part = m.group("datetime").partition("-")
+    out["date"] = date_part
+    # The tail is HHMMSS plus a frame counter; EcoTaxa wants exactly HHMMSS.
+    out["time"] = time_part[:6].zfill(6)
+    return out
+
+
+# --- morphometrics ----------------------------------------------------------
+
+# Feature names follow the old pipeline's EcoTaxa columns (see gen_crop_df's
+# `headers` in utils.py), so exports from both routes have the same schema.
+def region_features(mask: np.ndarray, crop: np.ndarray) -> dict:
+    """Zooprocess-style features from the segmenter's mask.
+
+    Mirrors regionprop2zooprocess() in utils.py. Where a mask has several
+    disconnected blobs we keep the largest, matching the old pipeline's
+    "largest contour" behaviour.
+    """
+    labels = measure.label(mask > 0)
+    props = measure.regionprops(labels, intensity_image=crop)
+    if not props:
+        return {}
+    prop = max(props, key=lambda p: p.area)
+
+    perim = float(prop.perimeter) or float("nan")
+    major = float(prop.axis_major_length) or float("nan")
+    filled = float(prop.area_filled)
+    area = float(prop.area)
+
+    return {
+        "object_bound_box_w": prop.bbox[3] - prop.bbox[1],
+        "object_bound_box_h": prop.bbox[2] - prop.bbox[0],
+        "object_circularity": (4 * np.pi * filled) / perim**2,
+        "object_area_exc": area,
+        "object_area_rprops": filled,
+        "object_%area": 1 - (area / filled) if filled else 0.0,
+        "object_major_axis_len": major,
+        "object_minor_axis_len": float(prop.axis_minor_length),
+        "object_centroid_y": float(prop.centroid[0]),
+        "object_centroid_x": float(prop.centroid[1]),
+        "object_convex_area": float(prop.area_convex),
+        "object_min_intensity": float(prop.intensity_min),
+        "object_max_intensity": float(prop.intensity_max),
+        "object_mean_intensity": float(prop.intensity_mean),
+        "object_int_density": filled * float(prop.intensity_mean),
+        "object_perimeter": perim,
+        "object_elongation": major / float(prop.axis_minor_length)
+        if prop.axis_minor_length else float("nan"),
+        "object_range": float(prop.intensity_max) - float(prop.intensity_min),
+        "object_perim_area_excl": perim / area if area else float("nan"),
+        "object_perim_major": perim / major,
+        "object_circularity_area_excl": (4 * np.pi * area) / perim**2,
+        "object_angle": float(prop.orientation) / np.pi * 180 + 90,
+        "object_boundbox_area": float(prop.area_bbox),
+        "object_eccentricity": float(prop.eccentricity),
+        "object_equivalent_diameter": float(prop.equivalent_diameter_area),
+        "object_euler_nr": float(prop.euler_number),
+        "object_extent": float(prop.extent),
+        "object_local_centroid_col": float(prop.centroid_local[1]),
+        "object_local_centroid_row": float(prop.centroid_local[0]),
+        "object_solidity": float(prop.solidity),
+    }
+
+
+# --- column order -----------------------------------------------------------
+
+# Order mirrors a real EcoTaxa export from the old pipeline. img_file_name and
+# object_id are the only columns EcoTaxa strictly requires.
+BASE_COLUMNS = [
+    "img_file_name", "img_rank", "object_id",
+    "object_date", "object_time",
+    "object_lat", "object_lon",
+    "object_pressure", "object_depth_min", "object_depth_max",
+    "object_temperature",
+    "object_x", "object_y", "object_width", "object_height",
+    "object_area", "object_esd",
+    "object_annotation_category", "object_annotation_status",
+]
+FEATURE_COLUMNS = [
+    "object_bound_box_w", "object_bound_box_h", "object_circularity",
+    "object_area_exc", "object_area_rprops", "object_%area",
+    "object_major_axis_len", "object_minor_axis_len",
+    "object_centroid_y", "object_centroid_x", "object_convex_area",
+    "object_min_intensity", "object_max_intensity", "object_mean_intensity",
+    "object_int_density", "object_perimeter", "object_elongation",
+    "object_range", "object_perim_area_excl", "object_perim_major",
+    "object_circularity_area_excl", "object_angle", "object_boundbox_area",
+    "object_eccentricity", "object_equivalent_diameter", "object_euler_nr",
+    "object_extent", "object_local_centroid_col", "object_local_centroid_row",
+    "object_solidity",
+]
+SAMPLE_COLUMNS = ["sample_id", "sample_cruise", "sample_dship_id", "sample_instrument"]
+ALL_COLUMNS = BASE_COLUMNS + FEATURE_COLUMNS + SAMPLE_COLUMNS
+
+# EcoTaxa's type row: [t] text, [f] float. Everything not listed here is text.
+TEXT_COLUMNS = {
+    "img_file_name", "object_id", "object_date", "object_time",
+    "object_annotation_category", "object_annotation_status",
+    "sample_id", "sample_cruise", "sample_dship_id", "sample_instrument",
+}
+
+
+def _fmt(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float):
+        if not np.isfinite(value):
+            return ""
+        return f"{value:.6g}"
+    return str(value)
+
+
+# --- export -----------------------------------------------------------------
+
+def export(
+    h5_path: Path,
+    out_dir: Path,
+    profile_name: str | None = None,
+    min_size: int = 0,
+    absolute_pressure: bool = True,
+    image_ext: str = "png",
+) -> tuple[Path, Path, int]:
+    """Write crops and an EcoTaxa TSV. Returns (crop_dir, tsv_path, n_objects)."""
+    profile = profile_name or h5_path.parent.name
+    crop_dir = out_dir / "crops"
+    crop_dir.mkdir(parents=True, exist_ok=True)
+
+    rows: list[dict] = []
+    n_frames = 0
+    n_skipped = 0
+
+    with h5py.File(h5_path, "r") as f:
+        for rank, frame in enumerate(sorted(f.keys()), start=1):
+            group = f[frame]
+            if not isinstance(group, h5py.Group) or "boundingBoxW" not in group:
+                continue
+            n_frames += 1
+            meta = parse_frame_name(frame)
+
+            bb_x = np.asarray(group["boundingBoxX"])
+            bb_y = np.asarray(group["boundingBoxY"])
+            bb_w = np.asarray(group["boundingBoxW"])
+            bb_h = np.asarray(group["boundingBoxH"])
+            offsets = np.asarray(group["offsets"])
+            crops = np.asarray(group["cropPixelData"])
+            masks = np.asarray(group["maskPixelData"]) if "maskPixelData" in group else None
+
+            for i in range(len(offsets)):
+                w, h = int(bb_w[i]), int(bb_h[i])
+                if w <= 0 or h <= 0:
+                    n_skipped += 1
+                    continue
+                if min_size and w <= min_size and h <= min_size:
+                    n_skipped += 1
+                    continue
+
+                off = int(offsets[i])
+                n_px = w * h
+                if off + n_px > crops.size:
+                    n_skipped += 1
+                    continue
+
+                crop = crops[off:off + n_px].reshape(h, w)
+                object_id = f"{frame}_{i + 1}"
+                rel_img = f"{object_id}.{image_ext}"
+                Image.fromarray(crop).save(crop_dir / rel_img)
+
+                row = {c: "" for c in ALL_COLUMNS}
+                row.update({
+                    "img_file_name": rel_img,
+                    "img_rank": rank,
+                    "object_id": object_id,
+                    "object_date": meta["date"],
+                    "object_time": meta["time"],
+                    "object_lat": meta["lat"],
+                    "object_lon": meta["lon"],
+                    "object_pressure": meta["pressure"],
+                    "object_temperature": meta["temperature"],
+                    "object_x": int(bb_x[i]),
+                    "object_y": int(bb_y[i]),
+                    "object_width": w,
+                    "object_height": h,
+                    "sample_id": profile,
+                    "sample_cruise": meta["cruise"],
+                    "sample_dship_id": meta["dship_id"],
+                    "sample_instrument": meta["instrument"],
+                })
+
+                if meta["pressure"] is not None:
+                    depth = meta["pressure"] - (ATM_DBAR if absolute_pressure else 0.0)
+                    row["object_depth_min"] = round(depth, 3)
+                    row["object_depth_max"] = round(depth, 3)
+
+                if masks is not None:
+                    mask = masks[off:off + n_px].reshape(h, w)
+                    feats = region_features(mask, crop)
+                    row.update(feats)
+                    if "object_area_exc" in feats:
+                        row["object_area"] = feats["object_area_exc"]
+                        row["object_esd"] = round(
+                            float(area_to_esd(feats["object_area_exc"])), 2)
+
+                rows.append(row)
+
+    tsv_path = out_dir / f"ecotaxa_{profile}.tsv"
+    with open(tsv_path, "w", newline="", encoding="utf-8") as fh:
+        writer = csv.writer(fh, delimiter="\t", lineterminator="\n")
+        writer.writerow(ALL_COLUMNS)
+        writer.writerow(["[t]" if c in TEXT_COLUMNS else "[f]" for c in ALL_COLUMNS])
+        for row in rows:
+            writer.writerow([_fmt(row.get(c, "")) for c in ALL_COLUMNS])
+
+    print(f"  frames: {n_frames}  objects: {len(rows)}  skipped: {n_skipped}")
+    return crop_dir, tsv_path, len(rows)
+
+
+def make_zips(crop_dir: Path, tsv_path: Path, out_dir: Path, profile: str,
+              max_zip_size_mb: int = 500) -> list[Path]:
+    """Package crops + TSV into one or more EcoTaxa import archives.
+
+    EcoTaxa wants the TSV and the images it references in the same archive, so
+    a split archive gets its own TSV holding only that part's rows.
+    """
+    with open(tsv_path, newline="", encoding="utf-8") as fh:
+        reader = csv.reader(fh, delimiter="\t")
+        header = next(reader)
+        type_row = next(reader)
+        data_rows = list(reader)
+
+    name_idx = header.index("img_file_name")
+    max_bytes = max_zip_size_mb * 1024 * 1024
+
+    groups: list[list[list[str]]] = []
+    current: list[list[str]] = []
+    current_size = 0
+    for row in data_rows:
+        img = crop_dir / row[name_idx]
+        size = img.stat().st_size if img.exists() else 0
+        if current and current_size + size > max_bytes:
+            groups.append(current)
+            current, current_size = [], 0
+        current.append(row)
+        current_size += size
+    if current:
+        groups.append(current)
+
+    written = []
+    for n, group in enumerate(groups, start=1):
+        suffix = "" if len(groups) == 1 else f"_part{n}"
+        zip_path = out_dir / f"{profile}{suffix}_ecotaxa.zip"
+        tsv_name = f"ecotaxa_{profile}.tsv"
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            buf = ["\t".join(header), "\t".join(type_row)]
+            buf += ["\t".join(r) for r in group]
+            zf.writestr(tsv_name, "\n".join(buf) + "\n")
+            for row in group:
+                img = crop_dir / row[name_idx]
+                if img.exists():
+                    zf.write(img, row[name_idx])
+        written.append(zip_path)
+        print(f"  {zip_path.name}  {len(group)} objects  "
+              f"{zip_path.stat().st_size / 1e6:.1f} MB")
+    return written
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(
+        description="Export an EcoTaxa import archive from the C++ segmenter's "
+                    "result.h5 (see README_ECOTAXA.md for the upload step).")
+    ap.add_argument("input", help="result.h5, or a results directory containing one")
+    ap.add_argument("-o", "--output", required=True, help="output directory")
+    ap.add_argument("--profile-name", default=None,
+                    help="sample_id and archive name (default: results dir name)")
+    ap.add_argument("--max-zip-size", type=int, default=500,
+                    help="split archives above this size in MB (default: 500)")
+    ap.add_argument("--min-size", type=int, default=0,
+                    help="drop objects whose width and height are both <= this")
+    ap.add_argument("--gauge-pressure", action="store_true",
+                    help="treat filename pressure as gauge; by default it is "
+                         "absolute and 10.1325 dbar is subtracted for depth")
+    ap.add_argument("--no-zip", action="store_true",
+                    help="write crops and TSV but skip archiving")
+    args = ap.parse_args()
+
+    src = Path(args.input)
+    if src.is_dir():
+        candidate = src / "result.h5"
+        if not candidate.exists():
+            found = sorted(src.glob("result*.h5"))
+            if not found:
+                print(f"ERROR: no result.h5 under {src}", file=sys.stderr)
+                return 1
+            candidate = found[0]
+        src = candidate
+    if not src.exists():
+        print(f"ERROR: {src} not found", file=sys.stderr)
+        return 1
+
+    out_dir = Path(args.output)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    profile = args.profile_name or src.parent.name
+
+    print(f"Exporting {src}")
+    crop_dir, tsv_path, n = export(
+        src, out_dir, profile_name=profile, min_size=args.min_size,
+        absolute_pressure=not args.gauge_pressure)
+
+    if n == 0:
+        print("ERROR: no objects exported", file=sys.stderr)
+        return 1
+
+    if not args.no_zip:
+        make_zips(crop_dir, tsv_path, out_dir, profile, args.max_zip_size)
+
+    print(f"Done: {n} objects -> {out_dir}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
