@@ -8,6 +8,12 @@ processing workers. This module needs nothing but Pillow.
 ``utils`` re-exports these names, so existing callers are unaffected.
 """
 
+# PIScO2 optics at 2560x2560: a 4.5 um sensor pixel, 400/160 inverse
+# magnification, binning 2. This is the same figure area_to_esd() derives, so a
+# drawn bar and a reported object_esd agree. (It was 23 here until 2026-09-09,
+# which disagreed with the ESD by 2.2%; 22.5 is the correct value.)
+PIXEL_SIZE_UM = 4.5 * (400 / 160) * 2
+
 # Rows appended below a crop to carry the scale bar. Fixed, so the strip is
 # removed by dropping this many rows (see strip_scale_bar).
 SCALE_BAR_STRIP_H = 34
@@ -35,7 +41,7 @@ def _scale_bar_geometry(width, pixel_resolution):
     return _SCALE_BAR_MIN_UM, bar_px, bar_px + 2 * margin
 
 
-def add_scale_bar_strip(img, pixel_resolution=23, strip_h=SCALE_BAR_STRIP_H):
+def add_scale_bar_strip(img, pixel_resolution=PIXEL_SIZE_UM, strip_h=SCALE_BAR_STRIP_H):
     """Append a scale bar below `img`, padding right only if the bar needs it.
 
     The crop's own pixels are never altered, and the original size is stored in
@@ -77,7 +83,7 @@ def add_scale_bar_strip(img, pixel_resolution=23, strip_h=SCALE_BAR_STRIP_H):
     return out
 
 
-def save_crop_with_scale_bar(img, fp, pixel_resolution=23):
+def save_crop_with_scale_bar(img, fp, pixel_resolution=PIXEL_SIZE_UM):
     """Write `img` with a scale bar, recording its original size in the PNG."""
     from PIL import PngImagePlugin
     out = add_scale_bar_strip(img, pixel_resolution=pixel_resolution)

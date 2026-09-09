@@ -1964,6 +1964,7 @@ def determine_dtype(dtype):
 # torch and the rest of this module's dependencies. Re-exported here so
 # existing callers keep working.
 from scale_bar import (  # noqa: F401
+    PIXEL_SIZE_UM,
     SCALE_BAR_STRIP_H,
     add_scale_bar_strip,
     save_crop_with_scale_bar,
@@ -1971,7 +1972,7 @@ from scale_bar import (  # noqa: F401
 )
 
 
-def add_scale_bar(image_path, output_path, pixel_resolution=23, scale_length_mm=1):
+def add_scale_bar(image_path, output_path, pixel_resolution=PIXEL_SIZE_UM, scale_length_mm=1):
     """
     Adds a scale bar below the image and saves it to the output path.
     

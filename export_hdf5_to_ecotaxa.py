@@ -68,7 +68,7 @@ from PIL import Image
 # The repo's reversible scale bar. It lives in its own module because
 # utils.py imports torch and transformers at module scope, and the
 # processing workers have neither.
-from scale_bar import SCALE_BAR_STRIP_H, save_crop_with_scale_bar
+from scale_bar import PIXEL_SIZE_UM, SCALE_BAR_STRIP_H, save_crop_with_scale_bar
 from skimage import measure
 
 # --- constants shared with utils.py, duplicated to keep this import-light ----
@@ -81,10 +81,6 @@ ECOTAXA_TAXON_MAP = {
     "Chaetognatha": "Chaetognatha<Animalia",
     "Ctenophora_Metazoa": "Ctenophora<Animalia",
 }
-
-# PIScO2 optics at 2560x2560: 4.5 µm/px sensor, 400/160 inverse magnification,
-# binning 2. Keep in sync with area_to_esd() in utils.py.
-PIXEL_SIZE_UM = 4.5 * (400 / 160) * 2
 
 # Standard atmosphere in dbar, subtracted to turn absolute pressure into depth.
 ATM_DBAR = 10.1325

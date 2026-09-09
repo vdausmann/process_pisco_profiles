@@ -120,10 +120,10 @@ chunks; a converter that drops them leaves only the strip removable.
 Morphometrics are computed before the bar is drawn, so `object_esd` and the
 shape features are unaffected either way.
 
-**Pixel size.** The default here is **22.5 um/px**, the value `area_to_esd()`
-uses, so the drawn bar and the exported `object_esd` agree. `scale_bar.py`
-defaults to 23 instead -- a 2.2% disagreement worth settling. Override with
-`--pixel-size`.
+**Pixel size** is **22.5 um/px** (`scale_bar.PIXEL_SIZE_UM`), derived from the
+PIScO2 optics: a 4.5 um sensor pixel, 400/160 inverse magnification, binning 2.
+That is the same figure `area_to_esd()` uses, so a drawn bar and a reported
+`object_esd` agree. Override per run with `--pixel-size`.
 
 ### Linking crops back to the raw data
 
