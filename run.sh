@@ -41,6 +41,7 @@ PROFILE_NAME="$(cfg profileName)"
 MAX_ZIP_SIZE="$(cfg maxZipSizeMb)"
 MIN_SIZE="$(cfg minSize)"
 GAUGE_PRESSURE="$(cfg gaugePressure)"
+LINK_BASE="$(cfg linkBase)"
 
 if [[ -z "$SOURCE_PATH" ]]; then
     echo "Error: sourcePath is required." >&2
@@ -55,6 +56,7 @@ ARGS=("$SOURCE_PATH" "-o" "$TARGET_PATH")
 [[ -n "$PROFILE_NAME" ]] && ARGS+=("--profile-name" "$PROFILE_NAME")
 [[ -n "$MAX_ZIP_SIZE" ]] && ARGS+=("--max-zip-size" "$MAX_ZIP_SIZE")
 [[ -n "$MIN_SIZE" ]] && ARGS+=("--min-size" "$MIN_SIZE")
+[[ -n "$LINK_BASE" ]] && ARGS+=("--link-base" "$LINK_BASE")
 # The Hub renders booleans as 0/1; accept the usual spellings too.
 case "${GAUGE_PRESSURE,,}" in
     1|true|yes|on) ARGS+=("--gauge-pressure") ;;

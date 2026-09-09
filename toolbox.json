@@ -60,6 +60,11 @@
                         "type": "boolean",
                         "default": false,
                         "description": "Treat the pressure in the frame name as gauge pressure. By default it is absolute and 10.1325 dbar is subtracted to give depth."
+                    },
+                    "linkBase": {
+                        "type": "string",
+                        "default": "",
+                        "description": "Hub base URL, e.g. http://10.11.11.110:5000. When set, every object gets an EcoTaxa object_link that opens the HDF profile viewer on that object in its frame. Leave empty for no links."
                     }
                 }
             },

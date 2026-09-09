@@ -98,6 +98,32 @@ Options worth knowing:
 | `--min-size` | drop objects whose bounding box is at or below this in both dimensions |
 | `--gauge-pressure` | treat the pressure in the frame name as gauge; by default it is absolute and 10.1325 dbar is subtracted for depth |
 
+### Linking crops back to the raw data
+
+With `--link-base` (or the `linkBase` setting) every object gets an EcoTaxa
+`object_link`. Clicking it in EcoTaxa's object details opens the HDF profile
+viewer on that exact object, in its frame, with the detection boxes drawn — and
+a *raw frame* toggle that swaps the reconstruction for the original image the
+camera recorded.
+
+```bash
+python export_hdf5_to_ecotaxa.py /path/to/results -o /out \
+    --link-base http://10.11.11.110:5000
+```
+
+The link is `<<base>>/v/<<workflow-id>>/<<frame>>/<<object number>>`, which the Hub
+resolves to the right `result.h5` at click time. It names the workflow rather
+than the file for two reasons: `object_link` is only `VARCHAR(255)` and a
+path-based URL came to 242 characters, and a stored path would dead-link the
+whole project if results ever moved. Links longer than the limit are dropped
+with a warning rather than failing the row.
+
+Outside a Hub workflow directory there is no workflow id to find, so pass
+`--workflow-id` explicitly or leave the links off.
+
+These URLs point at the Hub on the internal network — they are for people who
+can reach it, not for collaborators on a public EcoTaxa instance.
+
 ### As a Hub tool
 
 `toolbox.json` registers this as `pisco_ecotaxa_export`, so it can be the last
