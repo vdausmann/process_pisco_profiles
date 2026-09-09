@@ -65,6 +65,17 @@
                         "type": "string",
                         "default": "",
                         "description": "Hub base URL, e.g. http://10.11.11.110:5000. When set, every object gets an EcoTaxa object_link that opens the HDF profile viewer on that object in its frame. Leave empty for no links."
+                    },
+                    "scaleBar": {
+                        "type": "boolean",
+                        "default": true,
+                        "description": "Draw a scale bar under each crop. Uses the repo's reversible strip: the crop's own pixels are untouched and its original size is recorded in the PNG, so strip_scale_bar() restores it exactly before the crop reaches a classifier. The bar is 1 mm where it fits and 500 um otherwise."
+                    },
+                    "pixelSizeUm": {
+                        "type": "number",
+                        "minimum": 0.001,
+                        "default": 22.5,
+                        "description": "Micrometres per pixel, for the scale bar. Default 22.5 matches the value area_to_esd uses, so the bar and object_esd agree. Note utils/scale_bar default to 23, a 2.2% difference."
                     }
                 }
             },

@@ -28,6 +28,10 @@ Two things make this better than exporting from the old pipeline's PNGs:
   from what the segmenter actually detected. The old pipeline had to re-derive a
   mask by re-thresholding the saved crop and keeping the largest contour.
 
+Crops carry a reversible scale bar (``scale_bar.py``): the strip is appended
+below the image and the original size recorded in the PNG, so the crop can be
+restored byte-for-byte before it is used as classifier input.
+
 Crops are inverted on the way out: the segmenter stores objects bright on a
 dark ground, while EcoTaxa and the old pipeline's crops are dark on light. The
 inversion happens before morphometrics too, so intensity features match the
@@ -61,6 +65,10 @@ from pathlib import Path
 import h5py
 import numpy as np
 from PIL import Image
+# The repo's reversible scale bar. It lives in its own module because
+# utils.py imports torch and transformers at module scope, and the
+# processing workers have neither.
+from scale_bar import SCALE_BAR_STRIP_H, save_crop_with_scale_bar
 from skimage import measure
 
 # --- constants shared with utils.py, duplicated to keep this import-light ----
@@ -275,6 +283,8 @@ def export(
     image_ext: str = "png",
     link_base: str | None = None,
     workflow_id: str | None = None,
+    scale_bar: bool = True,
+    pixel_size_um: float = PIXEL_SIZE_UM,
 ) -> tuple[Path, Path, int]:
     """Write crops and an EcoTaxa TSV. Returns (crop_dir, tsv_path, n_objects)."""
     profile = profile_name or h5_path.parent.name
@@ -332,7 +342,15 @@ def export(
                 crop = (255 - crops[off:off + n_px].reshape(h, w)).astype(np.uint8)
                 object_id = f"{frame}_{i + 1}"
                 rel_img = f"{object_id}.{image_ext}"
-                Image.fromarray(crop).save(crop_dir / rel_img)
+                if scale_bar:
+                    # Records the original size in a PNG text chunk, so
+                    # strip_scale_bar() can undo the strip and any right
+                    # padding exactly before the crop reaches a classifier.
+                    save_crop_with_scale_bar(Image.fromarray(crop),
+                                             crop_dir / rel_img,
+                                             pixel_resolution=pixel_size_um)
+                else:
+                    Image.fromarray(crop).save(crop_dir / rel_img)
 
                 row = {c: "" for c in ALL_COLUMNS}
                 row.update({
@@ -392,6 +410,9 @@ def export(
             writer.writerow([_fmt(row.get(c, "")) for c in ALL_COLUMNS])
 
     print(f"  frames: {n_frames}  objects: {len(rows)}  skipped: {n_skipped}")
+    if scale_bar:
+        print(f"  scale bar: reversible, at {pixel_size_um} um/px "
+              f"({SCALE_BAR_STRIP_H} px strip below each crop)")
     if link_base:
         if workflow_id:
             print(f"  object_link: {n_links} written"
@@ -467,6 +488,15 @@ def main() -> int:
     ap.add_argument("--gauge-pressure", action="store_true",
                     help="treat filename pressure as gauge; by default it is "
                          "absolute and 10.1325 dbar is subtracted for depth")
+    ap.add_argument("--scale-bar", action=argparse.BooleanOptionalAction,
+                    default=True,
+                    help="Draw a scale bar under each crop (default: on). "
+                         "Reversible: strip_scale_bar() in scale_bar.py "
+                         "restores the original crop exactly.")
+    ap.add_argument("--pixel-size", type=float, default=PIXEL_SIZE_UM,
+                    help=f"Micrometres per pixel for the scale bar "
+                         f"(default: {PIXEL_SIZE_UM}, the value area_to_esd "
+                         f"uses, so the bar and object_esd agree).")
     ap.add_argument("--link-base", default=None,
                     help="Hub base URL, e.g. http://10.11.11.110:5000. Adds an "
                          "object_link per object that opens the HDF profile "
@@ -500,7 +530,8 @@ def main() -> int:
     crop_dir, tsv_path, n = export(
         src, out_dir, profile_name=profile, min_size=args.min_size,
         absolute_pressure=not args.gauge_pressure,
-        link_base=args.link_base, workflow_id=args.workflow_id)
+        link_base=args.link_base, workflow_id=args.workflow_id,
+        scale_bar=args.scale_bar, pixel_size_um=args.pixel_size)
 
     if n == 0:
         print("ERROR: no objects exported", file=sys.stderr)
