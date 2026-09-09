@@ -64,6 +64,59 @@ python upload_to_ecotaxa.py /path/to/deconv_crops.zip \
     --skip-existing-objects
 ```
 
+## Exporting from the C++ segmenter (HDF5 route)
+
+`export_ecotaxa_zips.py` above works on the **old Python pipeline's** output —
+a `_Results` folder with `Crops/`, `Deconv_crops/` and a per-profile TSV. The
+C++ segmenter produces none of that: crops, masks and bounding boxes live
+inside `result.h5`. Use `export_hdf5_to_ecotaxa.py` for that route.
+
+```bash
+python export_hdf5_to_ecotaxa.py /path/to/segmenter/results/result.h5 \
+    -o /path/to/export --profile-name M202_028-02
+```
+
+It writes one PNG per object, an `ecotaxa_<profile>.tsv` and a zip, in the same
+shape the importer already accepts — so `upload_to_ecotaxa.py` takes the result
+unchanged. Column names follow `rename_for_ecotaxa()`, so exports from both
+routes share a schema.
+
+The archive must come from `Mode::OBJECT_EXTRACTION` (`result.h5`), not from the
+correction checkpoints. If `pisco_deconvolve` ran **before** extraction, the
+crops are already deconvolved — deconvolution rewrites the correction files in
+place and extraction reads those.
+
+Morphometrics are computed from the segmenter's own `maskPixelData`, so unlike
+the old route there is no need to re-threshold the saved crop to recover a mask.
+
+Options worth knowing:
+
+| Flag | Meaning |
+|------|---------|
+| `--profile-name` | EcoTaxa `sample_id` and archive name; defaults to the results directory name |
+| `--max-zip-size` | split above this many MB; each part carries its own TSV |
+| `--min-size` | drop objects whose bounding box is at or below this in both dimensions |
+| `--gauge-pressure` | treat the pressure in the frame name as gauge; by default it is absolute and 10.1325 dbar is subtracted for depth |
+
+### As a Hub tool
+
+`toolbox.json` registers this as `pisco_ecotaxa_export`, so it can be the last
+step of a Hub workflow:
+
+```bash
+hub providers add /opt/pisco/tools/process_pisco_profiles
+```
+
+Chain it after extraction, pointing `sourcePath` at the *correction* task's
+output directory — extraction writes `result.h5` beside the checkpoints rather
+than into its own output directory:
+
+```json
+{"tool": "pisco_ecotaxa_export",
+ "settings": {"sourcePath": {"$from": {"task": 0, "output": "results"}},
+              "targetPath": "", "profileName": "M202_028-02"}}
+```
+
 ## Re-exporting EcoTaxa ZIPs
 
 If you need to regenerate ZIPs from already-processed profiles (e.g. after a metadata fix), use `export_ecotaxa_zips.py`:
