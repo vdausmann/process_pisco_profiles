@@ -98,6 +98,33 @@ Options worth knowing:
 | `--min-size` | drop objects whose bounding box is at or below this in both dimensions |
 | `--gauge-pressure` | treat the pressure in the frame name as gauge; by default it is absolute and 10.1325 dbar is subtracted for depth |
 
+### Scale bars
+
+Crops are exported with a scale bar by default, using the repo's reversible
+strip (`scale_bar.py`): a 34-row strip below the crop, the bar 1 mm where it
+fits and 500 um otherwise, padded on the right only when even that will not
+fit, so objects stay left-aligned.
+
+```bash
+python export_hdf5_to_ecotaxa.py /path/to/results -o /out --pixel-size 22.5
+python export_hdf5_to_ecotaxa.py /path/to/results -o /out --no-scale-bar
+```
+
+**It is exactly reversible.** The crop's own pixels are never altered and its
+original size is recorded in a PNG text chunk, so `strip_scale_bar()` restores
+the crop byte-for-byte -- strip *and* right padding. That matters because these
+same crops are classifier input, where a burnt-in bar is an appearance change
+the model never saw in training. Read the PNGs with PIL, which preserves text
+chunks; a converter that drops them leaves only the strip removable.
+
+Morphometrics are computed before the bar is drawn, so `object_esd` and the
+shape features are unaffected either way.
+
+**Pixel size.** The default here is **22.5 um/px**, the value `area_to_esd()`
+uses, so the drawn bar and the exported `object_esd` agree. `scale_bar.py`
+defaults to 23 instead -- a 2.2% disagreement worth settling. Override with
+`--pixel-size`.
+
 ### Linking crops back to the raw data
 
 With `--link-base` (or the `linkBase` setting) every object gets an EcoTaxa
