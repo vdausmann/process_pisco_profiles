@@ -1,0 +1,84 @@
+{
+    "manifest_version": 1,
+    "provider": {
+        "name": "process_pisco_profiles",
+        "description": "Post-processing of PIScO profiles: EcoTaxa export and upload.",
+        "version": "1.0"
+    },
+    "tools": [
+        {
+            "name": "pisco_ecotaxa_export",
+            "description": "Export an EcoTaxa import archive from the C++ segmenter's result.h5. Writes one PNG per object plus an ecotaxa_<profile>.tsv with acquisition metadata and zooprocess morphometrics, zipped ready for import. If pisco_deconvolve ran before extraction the crops are already deconvolved.",
+            "tags": [
+                "pisco",
+                "ecotaxa",
+                "export"
+            ],
+            "program_path": "run.sh",
+            "program_type": "binary",
+            "working_directory": ".",
+            "default_priority": 3,
+            "default_weight": 2,
+            "failed_ok": false,
+            "requires": [
+                "pisco-tools"
+            ],
+            "settings_format": "ini",
+            "settings_schema": {
+                "type": "object",
+                "required": [
+                    "sourcePath",
+                    "targetPath"
+                ],
+                "properties": {
+                    "sourcePath": {
+                        "type": "string",
+                        "description": "Segmenter results directory holding result.h5, or the result.h5 itself. This is the OBJECT_EXTRACTION output, not the correction checkpoints."
+                    },
+                    "targetPath": {
+                        "type": "string",
+                        "description": "Directory for the crops, the TSV and the zip. Leave empty to let the Hub choose."
+                    },
+                    "profileName": {
+                        "type": "string",
+                        "default": "",
+                        "description": "Profile name, used as EcoTaxa sample_id and in the archive filename. Empty uses the results directory name."
+                    },
+                    "maxZipSizeMb": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "default": 500,
+                        "description": "Split the export into multiple archives above this size. Each part carries its own TSV."
+                    },
+                    "minSize": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "default": 0,
+                        "description": "Drop objects whose bounding box width and height are both at or below this many pixels. 0 keeps everything the segmenter found."
+                    },
+                    "gaugePressure": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "Treat the pressure in the frame name as gauge pressure. By default it is absolute and 10.1325 dbar is subtracted to give depth."
+                    }
+                }
+            },
+            "inputs": [
+                {
+                    "name": "results",
+                    "kind": "directory",
+                    "settings_key": "sourcePath",
+                    "description": "Segmenter OBJECT_EXTRACTION output containing result.h5"
+                }
+            ],
+            "outputs": [
+                {
+                    "name": "export",
+                    "kind": "directory",
+                    "settings_key": "targetPath",
+                    "description": "EcoTaxa import archive(s), crops and TSV"
+                }
+            ]
+        }
+    ]
+}
