@@ -28,6 +28,11 @@ Two things make this better than exporting from the old pipeline's PNGs:
   from what the segmenter actually detected. The old pipeline had to re-derive a
   mask by re-thresholding the saved crop and keeping the largest contour.
 
+Crops are inverted on the way out: the segmenter stores objects bright on a
+dark ground, while EcoTaxa and the old pipeline's crops are dark on light. The
+inversion happens before morphometrics too, so intensity features match the
+other route.
+
 Deliberately free of pandas and of ``utils.py`` (which imports torch and
 transformers at module scope): an export job should not drag a GPU stack in.
 The few shared constants below are duplicated for that reason.
@@ -286,7 +291,14 @@ def export(
                     n_skipped += 1
                     continue
 
-                crop = crops[off:off + n_px].reshape(h, w)
+                # The segmenter stores objects bright on a dark ground, the way
+                # the sensor sees them. EcoTaxa — and the old Python pipeline's
+                # saved crops — want them dark on light. Invert before both the
+                # PNG and the features, because the old route measures its
+                # intensity morphometrics on the dark-on-light image; skipping
+                # this would flip min/max/mean_intensity, int_density and range
+                # relative to exports from the other route.
+                crop = (255 - crops[off:off + n_px].reshape(h, w)).astype(np.uint8)
                 object_id = f"{frame}_{i + 1}"
                 rel_img = f"{object_id}.{image_ext}"
                 Image.fromarray(crop).save(crop_dir / rel_img)
