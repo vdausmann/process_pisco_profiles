@@ -37,8 +37,15 @@ Deliberately free of pandas and of ``utils.py`` (which imports torch and
 transformers at module scope): an export job should not drag a GPU stack in.
 The few shared constants below are duplicated for that reason.
 
+With ``--link-base`` every object also gets an ``object_link`` pointing back at
+the Hub, which resolves it to the HDF profile viewer opened on that object in
+its frame. That is what connects a classified crop in EcoTaxa to the raw data
+it came from.
+
 Usage:
     python export_hdf5_to_ecotaxa.py /path/to/results/result.h5 -o /path/to/out
+    python export_hdf5_to_ecotaxa.py /path/to/results -o /out \\
+        --link-base http://10.11.11.110:5000
 """
 
 from __future__ import annotations
@@ -136,6 +143,22 @@ def parse_frame_name(name: str) -> dict:
     return out
 
 
+# --- back-links into the Hub ----------------------------------------------
+
+# Hub outputs live under .../workflows/<uuid>/<n>_<tool>/<output>/
+_WORKFLOW_IN_PATH = re.compile(r"/workflows/([0-9a-fA-F-]{36})/")
+
+# EcoTaxa's object_link column. Longer values are rejected by the import, so
+# we drop the link rather than let the row fail.
+OBJECT_LINK_MAX = 255
+
+
+def workflow_id_from_path(path: Path) -> str | None:
+    """The Hub workflow a results directory belongs to, if it is one."""
+    match = _WORKFLOW_IN_PATH.search(str(path))
+    return match.group(1) if match else None
+
+
 # --- morphometrics ----------------------------------------------------------
 
 # Feature names follow the old pipeline's EcoTaxa columns (see gen_crop_df's
@@ -198,7 +221,7 @@ def region_features(mask: np.ndarray, crop: np.ndarray) -> dict:
 # Order mirrors a real EcoTaxa export from the old pipeline. img_file_name and
 # object_id are the only columns EcoTaxa strictly requires.
 BASE_COLUMNS = [
-    "img_file_name", "img_rank", "object_id",
+    "img_file_name", "img_rank", "object_id", "object_link",
     "object_date", "object_time",
     "object_lat", "object_lon",
     "object_pressure", "object_depth_min", "object_depth_max",
@@ -225,7 +248,7 @@ ALL_COLUMNS = BASE_COLUMNS + FEATURE_COLUMNS + SAMPLE_COLUMNS
 
 # EcoTaxa's type row: [t] text, [f] float. Everything not listed here is text.
 TEXT_COLUMNS = {
-    "img_file_name", "object_id", "object_date", "object_time",
+    "img_file_name", "object_id", "object_link", "object_date", "object_time",
     "object_annotation_category", "object_annotation_status",
     "sample_id", "sample_cruise", "sample_dship_id", "sample_instrument",
 }
@@ -250,6 +273,8 @@ def export(
     min_size: int = 0,
     absolute_pressure: bool = True,
     image_ext: str = "png",
+    link_base: str | None = None,
+    workflow_id: str | None = None,
 ) -> tuple[Path, Path, int]:
     """Write crops and an EcoTaxa TSV. Returns (crop_dir, tsv_path, n_objects)."""
     profile = profile_name or h5_path.parent.name
@@ -259,6 +284,12 @@ def export(
     rows: list[dict] = []
     n_frames = 0
     n_skipped = 0
+    n_links = 0
+    n_links_too_long = 0
+
+    if link_base and not workflow_id:
+        workflow_id = workflow_id_from_path(h5_path)
+    link_base = link_base.rstrip("/") if link_base else None
 
     with h5py.File(h5_path, "r") as f:
         for rank, frame in enumerate(sorted(f.keys()), start=1):
@@ -324,6 +355,18 @@ def export(
                     "sample_instrument": meta["instrument"],
                 })
 
+                if link_base and workflow_id:
+                    # Points at the Hub, which resolves the workflow to its
+                    # result.h5 and opens the viewer on this object. The
+                    # object number matches the one in object_id, counting
+                    # from 1.
+                    link = f"{link_base}/v/{workflow_id}/{frame}/{i + 1}"
+                    if len(link) <= OBJECT_LINK_MAX:
+                        row["object_link"] = link
+                        n_links += 1
+                    else:
+                        n_links_too_long += 1
+
                 if meta["pressure"] is not None:
                     depth = meta["pressure"] - (ATM_DBAR if absolute_pressure else 0.0)
                     row["object_depth_min"] = round(depth, 3)
@@ -349,6 +392,14 @@ def export(
             writer.writerow([_fmt(row.get(c, "")) for c in ALL_COLUMNS])
 
     print(f"  frames: {n_frames}  objects: {len(rows)}  skipped: {n_skipped}")
+    if link_base:
+        if workflow_id:
+            print(f"  object_link: {n_links} written"
+                  + (f", {n_links_too_long} over {OBJECT_LINK_MAX} chars and dropped"
+                     if n_links_too_long else ""))
+        else:
+            print("  object_link: skipped - no workflow id in the path, "
+                  "pass --workflow-id to link anyway")
     return crop_dir, tsv_path, len(rows)
 
 
@@ -416,6 +467,13 @@ def main() -> int:
     ap.add_argument("--gauge-pressure", action="store_true",
                     help="treat filename pressure as gauge; by default it is "
                          "absolute and 10.1325 dbar is subtracted for depth")
+    ap.add_argument("--link-base", default=None,
+                    help="Hub base URL, e.g. http://10.11.11.110:5000. Adds an "
+                         "object_link per object that opens the HDF profile "
+                         "viewer on that object.")
+    ap.add_argument("--workflow-id", default=None,
+                    help="Workflow the results came from. Read from the path "
+                         "when it is a Hub output; only needed otherwise.")
     ap.add_argument("--no-zip", action="store_true",
                     help="write crops and TSV but skip archiving")
     args = ap.parse_args()
@@ -441,7 +499,8 @@ def main() -> int:
     print(f"Exporting {src}")
     crop_dir, tsv_path, n = export(
         src, out_dir, profile_name=profile, min_size=args.min_size,
-        absolute_pressure=not args.gauge_pressure)
+        absolute_pressure=not args.gauge_pressure,
+        link_base=args.link_base, workflow_id=args.workflow_id)
 
     if n == 0:
         print("ERROR: no objects exported", file=sys.stderr)
