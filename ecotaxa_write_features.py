@@ -26,6 +26,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -54,7 +55,13 @@ def apply_pca(matrix: np.ndarray, basis: dict) -> np.ndarray:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("embeddings", help="embeddings.npz from vit_classify_hdf5.py")
-    ap.add_argument("--project-id", type=int, required=True)
+    ap.add_argument("--project-id", type=int, default=None,
+                    help="EcoTaxa project to attach features to")
+    ap.add_argument("--project-id-from", default=None,
+                    help="import.json written by ecotaxa_import.py, or the "
+                         "directory holding it. Lets a workflow attach features "
+                         "to the project the import step just created, since the "
+                         "Hub chains tasks by path rather than by value.")
     ap.add_argument("--pca", required=True,
                     help="PCA basis .npz. Fitted and written if absent, "
                          "loaded and reused if present.")
@@ -70,6 +77,20 @@ def main() -> int:
 
     import psycopg
 
+    project_id = args.project_id
+    if project_id is None:
+        if not args.project_id_from:
+            print("ERROR: need --project-id or --project-id-from", file=sys.stderr)
+            return 1
+        marker = Path(args.project_id_from)
+        if marker.is_dir():
+            marker = marker / "import.json"
+        if not marker.exists():
+            print(f"ERROR: {marker} not found", file=sys.stderr)
+            return 1
+        project_id = json.loads(marker.read_text())["project_id"]
+        print(f"project id {project_id} read from {marker}")
+
     payload = np.load(args.embeddings, allow_pickle=False)
     object_ids = [str(v) for v in payload["object_ids"]]
     matrix = payload["embeddings"].astype(np.float64)
@@ -83,9 +104,9 @@ def main() -> int:
                 JOIN acquisitions a ON o.acquisid = a.acquisid
                 JOIN samples s ON a.acq_sample_id = s.sampleid
                 WHERE s.projid = %s
-            """, (args.project_id,))
+            """, (project_id,))
             by_orig = {row[0]: row[1] for row in cur.fetchall()}
-    print(f"project {args.project_id}: {len(by_orig)} objects")
+    print(f"project {project_id}: {len(by_orig)} objects")
 
     matched = [(by_orig[oid], i) for i, oid in enumerate(object_ids) if oid in by_orig]
     print(f"matched: {len(matched)}")
@@ -155,7 +176,7 @@ def main() -> int:
                 JOIN samples s ON a.acq_sample_id = s.sampleid
                 LEFT JOIN obj_cnn_features_vector v ON v.objcnnid = o.objid
                 WHERE s.projid = %s
-            """, (args.project_id,))
+            """, (project_id,))
             total, with_features = cur.fetchone()
     print(f"coverage: {with_features}/{total} objects have features"
           + ("  -> similarity search enabled" if with_features == total
