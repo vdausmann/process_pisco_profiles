@@ -51,7 +51,16 @@ case "${EMIT,,}" in 1|true|yes|on) ARGS+=("--emit-embeddings") ;; esac
 # Hub server's own (nix) Python must not leak in.
 unset PYTHONPATH PYTHONHOME
 PYTHON="${PISCO_PYTHON:-/opt/pisco/venvs/torch/bin/python}"
-[[ -x "$PYTHON" ]] || PYTHON="$(command -v python3)"
+if [[ ! -x "$PYTHON" ]]; then
+    echo "Warning: $PYTHON is not executable, falling back to the system python." >&2
+    PYTHON="$(command -v python3)"
+fi
+# Fail on a clear message rather than a traceback from inside the script:
+# a silently wrong interpreter is the confusing failure mode here.
+if ! "$PYTHON" -c "import torch, transformers, h5py" 2>/dev/null; then
+    echo "Error: $PYTHON cannot import torch, transformers, h5py. Set PISCO_PYTHON to an interpreter that can." >&2
+    exit 1
+fi
 
 # Models pulled from Hugging Face need a writable cache; /tmp is per-container.
 export HF_HOME="${HF_HOME:-/tmp/hf}"
