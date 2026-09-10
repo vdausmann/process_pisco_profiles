@@ -56,6 +56,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import os
 import re
 import sys
@@ -147,6 +148,47 @@ def parse_frame_name(name: str) -> dict:
     return out
 
 
+# --- predictions -----------------------------------------------------------
+
+def load_predictions(predictions_path: Path, taxonomy_map_path: Path):
+    """object_id -> (taxon_id, display_name, score), plus the model's name.
+
+    The TSV carries ``object_annotation_category_id``, the numeric EcoTaxa
+    taxon id, rather than a name: names are ambiguous (``Ctenophora`` is both a
+    comb jelly and a diatom) and the id is what the importer validates.
+
+    Labels marked ``skip`` in the map are the binary stage's gate, not
+    classifications; those objects are exported unannotated.
+    """
+    from ecotaxa_taxonomy_map import load_map
+
+    if predictions_path.is_dir():
+        predictions_path = predictions_path / "predictions.csv"
+    mapping = load_map(taxonomy_map_path)          # raises if any label is unmapped
+    raw = json.loads(Path(taxonomy_map_path).read_text())
+    skipped = {label for label, e in raw["labels"].items() if e.get("skip")}
+    display = {label: e.get("display_name", "") for label, e in raw["labels"].items()}
+    model_name = raw.get("source_model", "")
+
+    out: dict[str, tuple] = {}
+    n_gate = n_unmapped = 0
+    with open(predictions_path, newline="", encoding="utf-8") as fh:
+        for row in csv.DictReader(fh):
+            label = (row.get("top1") or "").strip()
+            if not label:
+                continue
+            if label in skipped:
+                n_gate += 1
+                continue
+            taxon_id = mapping.get(label)
+            if taxon_id is None:
+                n_unmapped += 1
+                continue
+            score = row.get("prob1") or ""
+            out[row["object_id"]] = (taxon_id, display.get(label, label), score)
+    return out, model_name, n_gate, n_unmapped
+
+
 # --- back-links into the Hub ----------------------------------------------
 
 # Hub outputs live under .../workflows/<uuid>/<n>_<tool>/<output>/
@@ -232,7 +274,9 @@ BASE_COLUMNS = [
     "object_temperature",
     "object_x", "object_y", "object_width", "object_height",
     "object_area", "object_esd",
-    "object_annotation_category", "object_annotation_status",
+    "object_annotation_category", "object_annotation_category_id",
+    "object_annotation_status", "object_prediction_score",
+    "object_prediction_model",
 ]
 FEATURE_COLUMNS = [
     "object_bound_box_w", "object_bound_box_h", "object_circularity",
@@ -254,6 +298,7 @@ ALL_COLUMNS = BASE_COLUMNS + FEATURE_COLUMNS + SAMPLE_COLUMNS
 TEXT_COLUMNS = {
     "img_file_name", "object_id", "object_link", "object_date", "object_time",
     "object_annotation_category", "object_annotation_status",
+    "object_prediction_model",
     "sample_id", "sample_cruise", "sample_dship_id", "sample_instrument",
 }
 
@@ -281,6 +326,8 @@ def export(
     workflow_id: str | None = None,
     scale_bar: bool = True,
     pixel_size_um: float = PIXEL_SIZE_UM,
+    predictions: dict | None = None,
+    prediction_model: str = "",
 ) -> tuple[Path, Path, int]:
     """Write crops and an EcoTaxa TSV. Returns (crop_dir, tsv_path, n_objects)."""
     profile = profile_name or h5_path.parent.name
@@ -292,6 +339,7 @@ def export(
     n_skipped = 0
     n_links = 0
     n_links_too_long = 0
+    n_predicted = 0
 
     if link_base and not workflow_id:
         workflow_id = workflow_id_from_path(h5_path)
@@ -369,6 +417,19 @@ def export(
                     "sample_instrument": meta["instrument"],
                 })
 
+                if predictions:
+                    predicted = predictions.get(object_id)
+                    if predicted:
+                        taxon_id, display_name, score = predicted
+                        # The id is what EcoTaxa validates; the name rides
+                        # along so the TSV is readable by a human.
+                        row["object_annotation_category_id"] = taxon_id
+                        row["object_annotation_category"] = display_name
+                        row["object_annotation_status"] = "predicted"
+                        row["object_prediction_score"] = score
+                        row["object_prediction_model"] = prediction_model
+                        n_predicted += 1
+
                 if link_base and workflow_id:
                     # Points at the Hub, which resolves the workflow to its
                     # result.h5 and opens the viewer on this object. The
@@ -406,6 +467,9 @@ def export(
             writer.writerow([_fmt(row.get(c, "")) for c in ALL_COLUMNS])
 
     print(f"  frames: {n_frames}  objects: {len(rows)}  skipped: {n_skipped}")
+    if predictions is not None:
+        print(f"  predictions: {n_predicted} of {len(rows)} objects annotated"
+              + (f" ({prediction_model})" if prediction_model else ""))
     if scale_bar:
         print(f"  scale bar: reversible, at {pixel_size_um} um/px "
               f"({SCALE_BAR_STRIP_H} px strip below each crop)")
@@ -493,6 +557,13 @@ def main() -> int:
                     help=f"Micrometres per pixel for the scale bar "
                          f"(default: {PIXEL_SIZE_UM}, the value area_to_esd "
                          f"uses, so the bar and object_esd agree).")
+    ap.add_argument("--predictions", default=None,
+                    help="predictions.csv from vit_classify_hdf5.py, or that "
+                         "stage's output directory. Annotations ride the import "
+                         "TSV, so no second trip to EcoTaxa is needed.")
+    ap.add_argument("--taxonomy-map", default=None,
+                    help="ecotaxa_taxonomy_map.json. Required with --predictions: "
+                         "the TSV carries numeric taxon ids, not label names.")
     ap.add_argument("--link-base", default=None,
                     help="Hub base URL, e.g. http://10.11.11.110:5000. Adds an "
                          "object_link per object that opens the HDF profile "
@@ -522,12 +593,25 @@ def main() -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     profile = args.profile_name or src.parent.name
 
+    predictions = None
+    prediction_model = ""
+    if args.predictions:
+        if not args.taxonomy_map:
+            print("ERROR: --predictions needs --taxonomy-map", file=sys.stderr)
+            return 1
+        predictions, prediction_model, n_gate, n_unmapped = load_predictions(
+            Path(args.predictions), Path(args.taxonomy_map))
+        print(f"predictions: {len(predictions)} usable"
+              + (f", {n_gate} gate-only, {n_unmapped} unmapped"
+                 if (n_gate or n_unmapped) else ""))
+
     print(f"Exporting {src}")
     crop_dir, tsv_path, n = export(
         src, out_dir, profile_name=profile, min_size=args.min_size,
         absolute_pressure=not args.gauge_pressure,
         link_base=args.link_base, workflow_id=args.workflow_id,
-        scale_bar=args.scale_bar, pixel_size_um=args.pixel_size)
+        scale_bar=args.scale_bar, pixel_size_um=args.pixel_size,
+        predictions=predictions, prediction_model=prediction_model)
 
     if n == 0:
         print("ERROR: no objects exported", file=sys.stderr)
