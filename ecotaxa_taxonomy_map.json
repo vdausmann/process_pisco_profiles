@@ -1,0 +1,60 @@
+{
+  "_comment": "Model label -> EcoTaxa taxon id. Entries with a null id must be resolved by hand before use; loading this map will refuse them. Rebuild with ecotaxa_taxonomy_map.py build, re-check with check. Ambiguous entries carry a note saying what was rejected and why.",
+  "source_model": "Veit/diplo-vit-plankton",
+  "labels": {
+    "Asteroidea larvae": {
+      "id": 12877,
+      "display_name": "Asteroidea<Asterozoa"
+    },
+    "Bacillariophyceae": {
+      "id": 17519,
+      "display_name": "Bacillariophyceae"
+    },
+    "Chaetognatha": {
+      "id": 11514,
+      "display_name": "Chaetognatha<Animalia"
+    },
+    "Ctenophora_Metazoa": {
+      "id": 11511,
+      "display_name": "Ctenophora<Animalia",
+      "note": "comb jellies. NOT 17513 Ctenophora<Fragilariaceae, which is a diatom."
+    },
+    "Noctiluca sp.": {
+      "id": 58408,
+      "display_name": "Noctiluca<Noctilucaceae"
+    },
+    "Pyrocystis": {
+      "id": 58550,
+      "display_name": "Pyrocystis"
+    },
+    "Rhizaria": {
+      "id": 342,
+      "display_name": "Rhizaria"
+    },
+    "Trichodesmium": {
+      "id": 8976,
+      "display_name": "Trichodesmium"
+    },
+    "Appendicularia": {
+      "id": 85123,
+      "display_name": "Appendicularia<Tunicata"
+    },
+    "Copepoda": {
+      "id": 25828,
+      "display_name": "Copepoda<Multicrustacea",
+      "note": "phylogenetic Class, matching ECOTAXA_TAXON_MAP in utils.py. NOT 94508, the morphological category."
+    },
+    "Thaliacea": {
+      "id": 16659,
+      "display_name": "Thaliacea"
+    },
+    "Cnidaria<Metazoa": {
+      "id": 11512,
+      "display_name": "Cnidaria<Animalia"
+    },
+    "Eumalacostraca": {
+      "id": 25824,
+      "display_name": "Eumalacostraca"
+    }
+  }
+}
