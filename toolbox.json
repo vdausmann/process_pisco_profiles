@@ -76,6 +76,16 @@
                         "minimum": 0.001,
                         "default": 22.5,
                         "description": "Micrometres per pixel, for the scale bar. Default 22.5 matches the value area_to_esd uses, so the bar and object_esd agree. Note utils/scale_bar default to 23, a 2.2% difference."
+                    },
+                    "predictionsPath": {
+                        "type": "string",
+                        "default": "",
+                        "description": "pisco_vit_classify output directory (or its predictions.csv). Its labels are written into the TSV as annotations, so predictions arrive with the import and no second trip to EcoTaxa is needed. Chain with {\"$from\": {\"task\": N, \"output\": \"predictions\"}}."
+                    },
+                    "taxonomyMapPath": {
+                        "type": "string",
+                        "default": "",
+                        "description": "ecotaxa_taxonomy_map.json. Required when predictionsPath is set: the TSV carries numeric EcoTaxa taxon ids (object_annotation_category_id), not label names, because names are ambiguous. Export fails if the map still has unresolved labels."
                     }
                 }
             },

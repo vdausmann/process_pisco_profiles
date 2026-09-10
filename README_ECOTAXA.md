@@ -125,6 +125,36 @@ PIScO2 optics: a 4.5 um sensor pixel, 400/160 inverse magnification, binning 2.
 That is the same figure `area_to_esd()` uses, so a drawn bar and a reported
 `object_esd` agree. Override per run with `--pixel-size`.
 
+### Predictions in the import (single pass)
+
+With `--predictions` and `--taxonomy-map`, the exporter writes the ViT's labels
+into the TSV, so objects arrive in EcoTaxa **already classified** -- no second
+trip, no credentials, no objid lookup.
+
+```bash
+python export_hdf5_to_ecotaxa.py /path/to/results -o /out \
+    --predictions /path/to/vit_stage/predictions \
+    --taxonomy-map ecotaxa_taxonomy_map.json
+```
+
+It writes `object_annotation_category_id`, the **numeric taxon id**, rather
+than a name: names are ambiguous (`Ctenophora` is both a comb jelly and a
+diatom) and the id is what the importer validates -- an id that does not exist
+aborts the import listing the offending values, rather than mislabelling
+quietly. The readable name goes in `object_annotation_category` alongside.
+
+Objects whose top-1 is a `skip` label in the map (the binary stage's `living`
+gate) are exported unannotated, since that is a filter and not a
+classification.
+
+**One thing this route cannot do**: EcoTaxa's import has no field for the
+classification confidence, so `classif_score` ends up 1.0. The real probability
+is preserved as the free column `object_prediction_score` (sortable and
+filterable in EcoTaxa, just not its native score), and the model that produced
+it as `object_prediction_model`. If you need `classif_score` populated, use
+`ecotaxa_write_predictions.py` after import instead -- that is also the route
+for re-predicting a project that already exists.
+
 ### Linking crops back to the raw data
 
 With `--link-base` (or the `linkBase` setting) every object gets an EcoTaxa

@@ -42,6 +42,8 @@ MAX_ZIP_SIZE="$(cfg maxZipSizeMb)"
 MIN_SIZE="$(cfg minSize)"
 GAUGE_PRESSURE="$(cfg gaugePressure)"
 LINK_BASE="$(cfg linkBase)"
+PREDICTIONS="$(cfg predictionsPath)"
+TAXONOMY_MAP="$(cfg taxonomyMapPath)"
 SCALE_BAR="$(cfg scaleBar)"
 PIXEL_SIZE="$(cfg pixelSizeUm)"
 
@@ -59,6 +61,8 @@ ARGS=("$SOURCE_PATH" "-o" "$TARGET_PATH")
 [[ -n "$MAX_ZIP_SIZE" ]] && ARGS+=("--max-zip-size" "$MAX_ZIP_SIZE")
 [[ -n "$MIN_SIZE" ]] && ARGS+=("--min-size" "$MIN_SIZE")
 [[ -n "$LINK_BASE" ]] && ARGS+=("--link-base" "$LINK_BASE")
+[[ -n "$PREDICTIONS" ]] && ARGS+=("--predictions" "$PREDICTIONS")
+[[ -n "$TAXONOMY_MAP" ]] && ARGS+=("--taxonomy-map" "$TAXONOMY_MAP")
 [[ -n "$PIXEL_SIZE" ]] && ARGS+=("--pixel-size" "$PIXEL_SIZE")
 # The scale bar is on by default, so only an explicit falsey value turns it off.
 case "${SCALE_BAR,,}" in
