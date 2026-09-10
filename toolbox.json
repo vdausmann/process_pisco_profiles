@@ -95,6 +95,97 @@
                     "description": "EcoTaxa import archive(s), crops and TSV"
                 }
             ]
+        },
+        {
+            "name": "pisco_vit_classify",
+            "description": "Run a ViT over the crops in the segmenter's result.h5. One stage of the dual-ViT setup: chain two tasks, a binary living/not-living pass over everything (with emitEmbeddings on), then a taxon pass restricted to the living ones. Reads crops straight from the HDF5, so no scale bar to strip and isolation stays a choice made at inference time.",
+            "tags": [
+                "pisco",
+                "ml",
+                "vit",
+                "classification"
+            ],
+            "program_path": "run_vit.sh",
+            "program_type": "binary",
+            "working_directory": ".",
+            "default_priority": 3,
+            "default_weight": 6,
+            "failed_ok": false,
+            "requires": [
+                "pisco-tools",
+                "gpu"
+            ],
+            "settings_format": "ini",
+            "settings_schema": {
+                "type": "object",
+                "required": [
+                    "sourcePath",
+                    "targetPath",
+                    "modelPath"
+                ],
+                "properties": {
+                    "sourcePath": {
+                        "type": "string",
+                        "description": "Segmenter results directory holding result.h5, or the file itself."
+                    },
+                    "targetPath": {
+                        "type": "string",
+                        "description": "Directory for predictions.csv and, if requested, embeddings.npz. Leave empty to let the Hub choose."
+                    },
+                    "modelPath": {
+                        "type": "string",
+                        "description": "Model directory on this machine, or a Hugging Face repo id (e.g. Veit/diplo-vit-plankton). This is the stage's model: the binary one for the first pass, the taxon one for the second."
+                    },
+                    "isolateCrops": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "Mask neighbouring objects out to white using the segmenter's own mask. MUST match how the model was trained - the ATAIIR2604 models were trained on isolated crops, the older ViT_custom_size_sensitive pair was not. Getting this wrong is an out-of-domain shift, not a cosmetic difference."
+                    },
+                    "emitEmbeddings": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "Also write the encoder CLS vectors, for EcoTaxa's similarity search. Set this on the stage that sees EVERY object (the binary one): EcoTaxa disables similarity search for a whole project if any object lacks a feature vector."
+                    },
+                    "batchSize": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "default": 64,
+                        "description": "Crops per GPU batch."
+                    },
+                    "topK": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "default": 5,
+                        "description": "How many ranked labels to record per object."
+                    },
+                    "restrictToPath": {
+                        "type": "string",
+                        "default": "",
+                        "description": "Earlier stage's output directory (or its predictions.csv). Only objects whose top1 label is in restrictLabels are classified. This is how the taxon stage is limited to living crops; chain it with {\"$from\": {\"task\": 0, \"output\": \"predictions\"}}."
+                    },
+                    "restrictLabels": {
+                        "type": "string",
+                        "default": "living",
+                        "description": "Comma-separated top1 labels to keep, when restrictToPath is set."
+                    }
+                }
+            },
+            "inputs": [
+                {
+                    "name": "results",
+                    "kind": "directory",
+                    "settings_key": "sourcePath",
+                    "description": "Segmenter OBJECT_EXTRACTION output containing result.h5"
+                }
+            ],
+            "outputs": [
+                {
+                    "name": "predictions",
+                    "kind": "directory",
+                    "settings_key": "targetPath",
+                    "description": "predictions.csv and optionally embeddings.npz"
+                }
+            ]
         }
     ]
 }
