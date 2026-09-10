@@ -79,6 +79,23 @@ def preprocess(crop: np.ndarray) -> torch.Tensor:
     return TF.normalize(tensor, mean=[0.5] * 3, std=[0.5] * 3)
 
 
+def wanted_by_frame(keep: set[str] | None) -> dict[str, set[int]] | None:
+    """Group object ids by their frame, as {frame: {row index, ...}}.
+
+    ``object_id`` is ``<frame>_<n>`` with n counting from 1, and frame names
+    themselves contain underscores, so the split is from the right. Lets a
+    restricted pass skip whole frames without reading their pixel data.
+    """
+    if keep is None:
+        return None
+    grouped: dict[str, set[int]] = {}
+    for object_id in keep:
+        frame, _, index = object_id.rpartition("_")
+        if frame and index.isdigit():
+            grouped.setdefault(frame, set()).add(int(index) - 1)
+    return grouped
+
+
 def iter_crops(h5_path: Path, isolate: bool, keep: set[str] | None):
     """Yield (object_id, crop) for every object, in frame order.
 
@@ -87,8 +104,11 @@ def iter_crops(h5_path: Path, isolate: bool, keep: set[str] | None):
     segmenter's own mask -- one of the axes a classifier is bound to, so it has
     to match the training regime.
     """
+    wanted = wanted_by_frame(keep)
     with h5py.File(h5_path, "r") as f:
         for frame in sorted(f.keys()):
+            if wanted is not None and frame not in wanted:
+                continue           # nothing wanted here; do not read its pixels
             group = f[frame]
             if not isinstance(group, h5py.Group) or "boundingBoxW" not in group:
                 continue
@@ -99,9 +119,9 @@ def iter_crops(h5_path: Path, isolate: bool, keep: set[str] | None):
             masks = np.asarray(group["maskPixelData"]) if isolate and "maskPixelData" in group else None
 
             for i in range(len(offsets)):
-                object_id = f"{frame}_{i + 1}"
-                if keep is not None and object_id not in keep:
+                if wanted is not None and i not in wanted[frame]:
                     continue
+                object_id = f"{frame}_{i + 1}"
                 w, h, off = int(widths[i]), int(heights[i]), int(offsets[i])
                 n_px = w * h
                 if w <= 0 or h <= 0 or off + n_px > pixels.size:
@@ -265,6 +285,16 @@ def main() -> int:
         print(f"ERROR: {src} not found", file=sys.stderr)
         return 1
 
+    # Chaining hands over the producing task's directory. pisco_vit_train writes
+    # its checkpoint to <output>/best_model beside the evaluation report, so
+    # accept either that directory or the model itself.
+    model_path = args.model
+    candidate = Path(model_path)
+    if candidate.is_dir() and not (candidate / "config.json").exists() \
+            and (candidate / "best_model" / "config.json").exists():
+        model_path = str(candidate / "best_model")
+        print(f"Using {model_path}")
+
     keep = None
     carried = None
     if args.restrict_to:
@@ -288,7 +318,7 @@ def main() -> int:
             return 1
 
     print(f"Classifying {src}")
-    n = classify(src, Path(args.output), args.model,
+    n = classify(src, Path(args.output), model_path,
                  isolate=args.isolate_crops, batch_size=args.batch_size,
                  top_k=args.top_k, emit_embeddings=args.emit_embeddings,
                  keep=keep, carried=carried)

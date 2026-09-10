@@ -4,8 +4,17 @@ Rebuilds and retrains the two classifiers the pipeline uses: a binary
 living / not-living stage, then a taxon classifier over the living crops.
 
 The training set is *derived*, not stored here: labels come from validated
-EcoTaxa objects and images from the `deconv_crops` zips a pipeline run already
-wrote. `build_trainset.py` reassembles it, so only the recipe is versioned.
+EcoTaxa objects and the images from the run those objects were exported from.
+`build_trainset.py` reassembles it, so only the recipe is versioned.
+
+Crops are read either from the segmenter's **`result.h5`**, through the same
+function inference uses, or from the old python pipeline's **`deconv_crops`
+zips** -- which is how projects validated before the Hub existed can still be
+trained from. The EcoTaxa *export* zips are not a source: their PNGs carry a
+scale bar no model was trained with.
+
+The whole recipe also runs as three Hub tools; see [Running it on the
+Hub](#running-it-on-the-hub) below.
 
 ## Why the crops are not committed
 
@@ -30,6 +39,24 @@ longest edge to 224, centre-pad to 224x224 with white, normalise to [-1, 1] -
 and applies rotation augmentation to the training split only, because inference
 is deterministic (its `RandomRotation` is commented out).
 
+That is no longer a claim in a comment: at startup `train_vit.py` runs its own
+preprocessing and `vit_classify_hdf5.preprocess` over the same crops and
+**aborts if they disagree**. The two cannot drift apart unnoticed.
+
+## What the trainer is
+
+A plain PyTorch loop rather than `transformers.Trainer`. The processing workers
+carry torch, transformers, torchvision and scikit-learn; using the Trainer would
+mean adding `datasets`, `evaluate` and `accelerate` to every worker for what is
+a single-GPU fine-tune, and pinning against a `TrainingArguments` API that has
+already changed under us. The recipe is unchanged: AdamW at `--lr` decayed
+linearly to zero with no warmup, a stratified 70/15/15 split, and the checkpoint
+with the best validation accuracy is the one saved.
+
+`--precision auto` uses fp16 only where the GPU has tensor cores (compute
+capability 7.0+). On Pascal cards - the Tesla P4s in the test cluster - fp16 is
+*slower* than fp32, so auto correctly stays in fp32 there.
+
 ## Reproducing ATAIIR2604_NorthSea
 
 Run: ATAIR-BSH, April 2026 (North Sea), 3 profiles, LUCYD **v5a** deconvolution
@@ -40,6 +67,7 @@ python training/build_trainset.py \
     --projects 23022 23052 23196 \
     --crops-root /media/veit/T710_data/pisco_processed/ATAIR-BSH_v5alucyd_iso \
     --out ~/ATAIIR2604_NorthSea_trainset \
+    --isolate-crops \
     --nonliving Unknowns not-living bubble t001 \
     --exclude-multiclass "multiple species" \
     --min-per-class 20
@@ -56,6 +84,13 @@ python training/train_vit.py \
     --out  ~/ViT_ATAIIR2604_NorthSea_multiclass \
     --init /home/veit/PIScO_dev/ViT_custom_size_sensitive_v5/best_model
 ```
+
+`--projects` fetches the labels inline and needs EcoTaxa credentials on this
+machine; `--labels labels.csv` uses what `ecotaxa_fetch_labels.py` already
+fetched, which is how the Hub runs it on a worker that has none. Those crops
+came from the old pipeline's zips, so `--isolate-crops` (which applies to the
+HDF5 path) changes nothing there - it is shown because a rebuild from
+`result.h5` needs it to match `PISCO_ISOLATE_CROPS`.
 
 Projects are listed in priority order. 23052 and 23196 are *subsets* (copies)
 of 23022, so the same crop recurs; the last project wins, letting a
@@ -91,6 +126,61 @@ the one real signal - it needs more validated examples.
 
 `pluteus` did not exist in the previous model, which called those objects
 *Rhizaria*; that systematic confusion is resolved by construction here.
+
+## Running it on the Hub
+
+Three tools, in the toolbox manifest:
+
+| tool | runs on | does |
+|---|---|---|
+| `pisco_ecotaxa_labels` | the EcoTaxa machine | fetches validated labels -> `labels.csv` |
+| `pisco_vit_trainset` | a processing worker | labels + crops -> `binary/` and `multiclass/` |
+| `pisco_vit_train` | a GPU worker | one stage -> `best_model/` + `eval_report.json` |
+
+The split is about **credentials, not connectivity**: EcoTaxa credentials live
+on the EcoTaxa machine rather than in task settings, which the Hub renders onto
+shared storage in plain text. So the fetch happens there, and everything after
+it works from `labels.csv`.
+
+```json
+{"name": "retrain the dual ViT", "tasks": [
+  {"tool": "pisco_ecotaxa_labels", "settings": {
+    "projectIds": "23022,23052,23196", "targetPath": ""}},
+
+  {"tool": "pisco_vit_trainset", "settings": {
+    "labelsPath": {"$from": {"task": 0, "output": "labels"}},
+    "cropsPath": "/mnt/pisco/.../0_pisco_segment/results/",
+    "targetPath": "", "isolateCrops": true,
+    "nonLiving": "Unknowns,not-living,bubble,t001",
+    "excludeMulticlass": "multiple species", "minPerClass": 20}},
+
+  {"tool": "pisco_vit_train", "settings": {
+    "dataPath": {"$from": {"task": 1, "output": "trainset"}},
+    "stage": "binary", "targetPath": "", "epochs": 30,
+    "initModel": "/opt/pisco/models/ViT_custom_size_sensitive_binary/best_model"}},
+
+  {"tool": "pisco_vit_train", "settings": {
+    "dataPath": {"$from": {"task": 1, "output": "trainset"}},
+    "stage": "multiclass", "targetPath": "", "epochs": 30,
+    "initModel": "/opt/pisco/models/ViT_custom_size_sensitive_v5/best_model"}}
+]}
+```
+
+Both training tasks read the same trainset, so they can run concurrently on two
+GPU workers. Each writes `best_model/`, and `pisco_vit_classify` takes the task
+output directory as its `modelPath` - it finds `best_model/` inside - so a
+retrained pair chains straight into a classification run:
+
+```json
+  {"tool": "pisco_vit_classify", "settings": {
+    "sourcePath": "/mnt/pisco/.../results/", "targetPath": "",
+    "modelPath": {"$from": {"task": 2, "output": "model"}},
+    "isolateCrops": true, "emitEmbeddings": true}}
+```
+
+`isolateCrops` must be the same on the trainset task and on every classify task
+that uses the result. It is the axis this README is about, and nothing checks it
+for you.
 
 ## Publishing
 
