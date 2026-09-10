@@ -113,19 +113,31 @@ def iter_crops(h5_path: Path, isolate: bool, keep: set[str] | None):
                 yield object_id, crop
 
 
-def load_restriction(path: Path, labels: set[str]) -> set[str]:
-    """Object ids from a previous stage whose top-1 label is in `labels`."""
-    keep = set()
+def load_restriction(path: Path, labels: set[str]) -> tuple[set[str], list[dict]]:
+    """Split a previous stage's rows into (ids to classify, rows to carry).
+
+    The carried rows are the ones this stage will not look at -- typically the
+    binary pass's not-living verdicts. Keeping them means this stage's output
+    describes every object, so a downstream task needs one reference to it
+    rather than one per stage. That matters because the Hub only resolves
+    {"$from": ...} inside dicts, not inside lists, so two references cannot be
+    chained into a single setting.
+    """
+    keep: set[str] = set()
+    carried: list[dict] = []
     with open(path, newline="", encoding="utf-8") as fh:
         for row in csv.DictReader(fh):
             if (row.get("top1") or "").strip().lower() in labels:
                 keep.add(row["object_id"])
-    return keep
+            else:
+                carried.append(row)
+    return keep, carried
 
 
 def classify(h5_path: Path, out_dir: Path, model_path: str, *,
              isolate: bool = False, batch_size: int = 64, top_k: int = 5,
-             emit_embeddings: bool = False, keep: set[str] | None = None) -> int:
+             emit_embeddings: bool = False, keep: set[str] | None = None,
+             carried: list[dict] | None = None) -> int:
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"  device: {device}")
     model = ViTForImageClassification.from_pretrained(model_path).to(device).eval()
@@ -175,10 +187,22 @@ def classify(h5_path: Path, out_dir: Path, model_path: str, *,
             flush()
     flush()
 
+    if carried:
+        # Rows this stage skipped, kept verbatim so the file covers every
+        # object. Written after, then sorted, so order does not depend on which
+        # stage produced a row.
+        rows.extend(carried)
+        rows.sort(key=lambda r: r["object_id"])
+        print(f"  carried forward: {len(carried)} rows from the earlier stage")
+
     columns = ["object_id"] + [f"top{i + 1}" for i in range(k)] + [f"prob{i + 1}" for i in range(k)]
+    for row in rows:                       # a carried row may have more columns
+        for column in row:
+            if column not in columns:
+                columns.append(column)
     predictions_path = out_dir / "predictions.csv"
     with open(predictions_path, "w", newline="", encoding="utf-8") as fh:
-        writer = csv.DictWriter(fh, fieldnames=columns)
+        writer = csv.DictWriter(fh, fieldnames=columns, restval="")
         writer.writeheader()
         writer.writerows(rows)
     print(f"  {predictions_path.name}: {len(rows)} objects"
@@ -217,6 +241,12 @@ def main() -> int:
                          "object, i.e. the binary one.")
     ap.add_argument("--restrict-to", default=None,
                     help="predictions.csv from an earlier stage, or that stage's output directory")
+    ap.add_argument("--carry-forward", action=argparse.BooleanOptionalAction,
+                    default=True,
+                    help="with --restrict-to, keep the earlier stage's rows for "
+                         "objects this stage skips, so the output covers every "
+                         "object and one reference to it is enough downstream "
+                         "(default: on)")
     ap.add_argument("--restrict-labels", default="living",
                     help="comma-separated top1 labels to keep (default: living)")
     args = ap.parse_args()
@@ -236,6 +266,7 @@ def main() -> int:
         return 1
 
     keep = None
+    carried = None
     if args.restrict_to:
         labels = {s.strip().lower() for s in args.restrict_labels.split(",") if s.strip()}
         restrict_path = Path(args.restrict_to)
@@ -247,8 +278,11 @@ def main() -> int:
         if not restrict_path.exists():
             print(f"ERROR: {restrict_path} not found", file=sys.stderr)
             return 1
-        keep = load_restriction(restrict_path, labels)
-        print(f"Restricted to {len(keep)} objects labelled {sorted(labels)}")
+        keep, carried = load_restriction(restrict_path, labels)
+        if not args.carry_forward:
+            carried = []
+        print(f"Restricted to {len(keep)} objects labelled {sorted(labels)}"
+              + (f"; carrying {len(carried)} others forward" if carried else ""))
         if not keep:
             print("ERROR: restriction matched no objects", file=sys.stderr)
             return 1
@@ -256,7 +290,8 @@ def main() -> int:
     print(f"Classifying {src}")
     n = classify(src, Path(args.output), args.model,
                  isolate=args.isolate_crops, batch_size=args.batch_size,
-                 top_k=args.top_k, emit_embeddings=args.emit_embeddings, keep=keep)
+                 top_k=args.top_k, emit_embeddings=args.emit_embeddings,
+                 keep=keep, carried=carried)
     if n == 0:
         print("ERROR: nothing classified", file=sys.stderr)
         return 1

@@ -80,7 +80,7 @@
                     "predictionsPath": {
                         "type": "string",
                         "default": "",
-                        "description": "pisco_vit_classify output directory (or its predictions.csv). Its labels are written into the TSV as annotations, so predictions arrive with the import and no second trip to EcoTaxa is needed. Chain with {\"$from\": {\"task\": N, \"output\": \"predictions\"}}."
+                        "description": "pisco_vit_classify output directory (or its predictions.csv). Its labels are written into the TSV as annotations, so predictions arrive with the import and no second trip to EcoTaxa is needed. In a dual-ViT chain point this at the LAST stage: with carryForward on it already covers every object, the taxon labels where it classified and the binary verdict elsewhere. Comma-separating several stages also works for manual runs, applied in order. Chain with {\"$from\": {\"task\": N, \"output\": \"predictions\"}}."
                     },
                     "taxonomyMapPath": {
                         "type": "string",
@@ -177,6 +177,11 @@
                         "type": "string",
                         "default": "living",
                         "description": "Comma-separated top1 labels to keep, when restrictToPath is set."
+                    },
+                    "carryForward": {
+                        "type": "boolean",
+                        "default": true,
+                        "description": "With restrictToPath, keep the earlier stage's rows for objects this stage skips, so predictions.csv covers every object. Leave on: it lets a downstream task reference this stage alone, which matters because the Hub resolves $from inside dicts but not inside lists, so two references cannot be combined in one setting."
                     }
                 }
             },

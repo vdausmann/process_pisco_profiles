@@ -55,6 +55,16 @@
     "Eumalacostraca": {
       "id": 25824,
       "display_name": "Eumalacostraca"
+    },
+    "living": {
+      "id": null,
+      "skip": true,
+      "note": "binary gate, not a taxon. The only matches are living<t011 and living<Chydoridae, neither meaningful."
+    },
+    "not-living": {
+      "id": 84960,
+      "display_name": "not-living",
+      "note": "the binary stage's negative verdict, which IS a real EcoTaxa category, so those objects arrive labelled rather than blank."
     }
   }
 }

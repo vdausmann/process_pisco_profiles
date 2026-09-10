@@ -150,8 +150,13 @@ def parse_frame_name(name: str) -> dict:
 
 # --- predictions -----------------------------------------------------------
 
-def load_predictions(predictions_path: Path, taxonomy_map_path: Path):
+def load_predictions(prediction_paths: list[Path], taxonomy_map_path: Path):
     """object_id -> (taxon_id, display_name, score), plus the model's name.
+
+    Several stages can contribute, applied in order so a later one wins. That
+    is what a dual-ViT chain needs: the binary stage labels everything
+    living/not-living, the taxon stage relabels only the living ones, and the
+    not-living objects keep the binary verdict instead of arriving unannotated.
 
     The TSV carries ``object_annotation_category_id``, the numeric EcoTaxa
     taxon id, rather than a name: names are ambiguous (``Ctenophora`` is both a
@@ -162,8 +167,6 @@ def load_predictions(predictions_path: Path, taxonomy_map_path: Path):
     """
     from ecotaxa_taxonomy_map import load_map
 
-    if predictions_path.is_dir():
-        predictions_path = predictions_path / "predictions.csv"
     mapping = load_map(taxonomy_map_path)          # raises if any label is unmapped
     raw = json.loads(Path(taxonomy_map_path).read_text())
     skipped = {label for label, e in raw["labels"].items() if e.get("skip")}
@@ -172,20 +175,27 @@ def load_predictions(predictions_path: Path, taxonomy_map_path: Path):
 
     out: dict[str, tuple] = {}
     n_gate = n_unmapped = 0
-    with open(predictions_path, newline="", encoding="utf-8") as fh:
-        for row in csv.DictReader(fh):
-            label = (row.get("top1") or "").strip()
-            if not label:
-                continue
-            if label in skipped:
-                n_gate += 1
-                continue
-            taxon_id = mapping.get(label)
-            if taxon_id is None:
-                n_unmapped += 1
-                continue
-            score = row.get("prob1") or ""
-            out[row["object_id"]] = (taxon_id, display.get(label, label), score)
+    for predictions_path in prediction_paths:
+        if predictions_path.is_dir():
+            predictions_path = predictions_path / "predictions.csv"
+        if not predictions_path.exists():
+            raise SystemExit(f"ERROR: {predictions_path} not found")
+        with open(predictions_path, newline="", encoding="utf-8") as fh:
+            for row in csv.DictReader(fh):
+                label = (row.get("top1") or "").strip()
+                if not label:
+                    continue
+                if label in skipped:
+                    # A gate verdict is not a classification. Leave whatever an
+                    # earlier stage decided rather than erasing it.
+                    n_gate += 1
+                    continue
+                taxon_id = mapping.get(label)
+                if taxon_id is None:
+                    n_unmapped += 1
+                    continue
+                score = row.get("prob1") or ""
+                out[row["object_id"]] = (taxon_id, display.get(label, label), score)
     return out, model_name, n_gate, n_unmapped
 
 
@@ -560,7 +570,10 @@ def main() -> int:
     ap.add_argument("--predictions", default=None,
                     help="predictions.csv from vit_classify_hdf5.py, or that "
                          "stage's output directory. Annotations ride the import "
-                         "TSV, so no second trip to EcoTaxa is needed.")
+                         "TSV, so no second trip to EcoTaxa is needed. Comma-"
+                         "separate several stages: they are applied in order, so "
+                         "a taxon stage overrides the binary stage on the crops "
+                         "it covers and the rest keep their binary verdict.")
     ap.add_argument("--taxonomy-map", default=None,
                     help="ecotaxa_taxonomy_map.json. Required with --predictions: "
                          "the TSV carries numeric taxon ids, not label names.")
@@ -599,8 +612,10 @@ def main() -> int:
         if not args.taxonomy_map:
             print("ERROR: --predictions needs --taxonomy-map", file=sys.stderr)
             return 1
+        prediction_paths = [Path(p.strip()) for p in args.predictions.split(",")
+                            if p.strip()]
         predictions, prediction_model, n_gate, n_unmapped = load_predictions(
-            Path(args.predictions), Path(args.taxonomy_map))
+            prediction_paths, Path(args.taxonomy_map))
         print(f"predictions: {len(predictions)} usable"
               + (f", {n_gate} gate-only, {n_unmapped} unmapped"
                  if (n_gate or n_unmapped) else ""))

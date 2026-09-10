@@ -31,6 +31,7 @@ BATCH="$(cfg batchSize)"
 TOPK="$(cfg topK)"
 RESTRICT_TO="$(cfg restrictToPath)"
 RESTRICT_LABELS="$(cfg restrictLabels)"
+CARRY_FORWARD="$(cfg carryForward)"
 
 for required in SOURCE_PATH TARGET_PATH MODEL_PATH; do
     if [[ -z "${!required}" ]]; then
@@ -46,6 +47,8 @@ ARGS=("$SOURCE_PATH" "-o" "$TARGET_PATH" "--model" "$MODEL_PATH")
 [[ -n "$RESTRICT_LABELS" ]] && ARGS+=("--restrict-labels" "$RESTRICT_LABELS")
 case "${ISOLATE,,}" in 1|true|yes|on) ARGS+=("--isolate-crops") ;; esac
 case "${EMIT,,}" in 1|true|yes|on) ARGS+=("--emit-embeddings") ;; esac
+# carry-forward is on by default; only an explicit falsey value turns it off.
+case "${CARRY_FORWARD,,}" in 0|false|no|off) ARGS+=("--no-carry-forward") ;; esac
 
 # torch and transformers live in the venv built from the official wheel; the
 # Hub server's own (nix) Python must not leak in.
