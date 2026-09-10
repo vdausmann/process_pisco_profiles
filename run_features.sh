@@ -21,11 +21,12 @@ cfg() {
 
 EMBEDDINGS="$(cfg embeddingsPath)"
 PROJECT_ID="$(cfg projectId)"
+PROJECT_ID_FROM="$(cfg projectIdFrom)"
 PCA_PATH="$(cfg pcaPath)"
 DSN="$(cfg dsn)"
 ALLOW_PARTIAL="$(cfg allowPartial)"
 
-for required in EMBEDDINGS PROJECT_ID PCA_PATH; do
+for required in EMBEDDINGS PCA_PATH; do
     if [[ -z "${!required}" ]]; then
         echo "Error: $required is required." >&2
         exit 1
@@ -37,7 +38,14 @@ if [[ -d "$EMBEDDINGS" ]]; then
     EMBEDDINGS="${EMBEDDINGS%/}/embeddings.npz"
 fi
 
-ARGS=("$EMBEDDINGS" "--project-id" "$PROJECT_ID" "--pca" "$PCA_PATH")
+if [[ -z "$PROJECT_ID" && -z "$PROJECT_ID_FROM" ]]; then
+    echo "Error: projectId or projectIdFrom is required." >&2
+    exit 1
+fi
+
+ARGS=("$EMBEDDINGS" "--pca" "$PCA_PATH")
+[[ -n "$PROJECT_ID" ]] && ARGS+=("--project-id" "$PROJECT_ID")
+[[ -n "$PROJECT_ID_FROM" ]] && ARGS+=("--project-id-from" "$PROJECT_ID_FROM")
 [[ -n "$DSN" ]] && ARGS+=("--dsn" "$DSN")
 case "${ALLOW_PARTIAL,,}" in 1|true|yes|on) ARGS+=("--allow-partial") ;; esac
 
@@ -57,7 +65,7 @@ fi
 echo "=== EcoTaxa feature write ==="
 echo "Interpreter: $PYTHON"
 echo "Embeddings:  $EMBEDDINGS"
-echo "Project:     $PROJECT_ID"
+echo "Project:     ${PROJECT_ID:-from $PROJECT_ID_FROM}"
 echo ""
 
 exec "$PYTHON" "$SCRIPT_DIR/ecotaxa_write_features.py" "${ARGS[@]}"

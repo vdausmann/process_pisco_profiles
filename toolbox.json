@@ -220,7 +220,6 @@
                 "type": "object",
                 "required": [
                     "embeddingsPath",
-                    "projectId",
                     "pcaPath"
                 ],
                 "properties": {
@@ -231,7 +230,7 @@
                     "projectId": {
                         "type": "integer",
                         "minimum": 1,
-                        "description": "EcoTaxa project to attach the features to. Its objects' orig_id must equal the object_id in the embeddings."
+                        "description": "EcoTaxa project to attach the features to. Leave unset and use projectIdFrom to chain off an import task. Its objects' orig_id must equal the object_id in the embeddings."
                     },
                     "pcaPath": {
                         "type": "string",
@@ -246,6 +245,11 @@
                         "type": "boolean",
                         "default": false,
                         "description": "Write even when some objects would have no vector. EcoTaxa refuses to run a similarity search on such a project, so this is for debugging only."
+                    },
+                    "projectIdFrom": {
+                        "type": "string",
+                        "default": "",
+                        "description": "pisco_ecotaxa_import output directory (or its import.json). Attaches features to the project that step created, so the whole chain runs without a human carrying the project number across. Use instead of projectId."
                     }
                 }
             },
@@ -258,6 +262,93 @@
                 }
             ],
             "outputs": []
+        },
+        {
+            "name": "pisco_ecotaxa_import",
+            "description": "Import an exported archive into EcoTaxa. Creates a new project by default, or adds to an existing one when projectId is set. Nothing is copied: the Hub's share is mounted inside EcoTaxa's server load area, so the archive is imported where it already sits. Writes import.json with the project id, so a following task can attach features to the project this one created.",
+            "tags": [
+                "pisco",
+                "ecotaxa",
+                "import"
+            ],
+            "program_path": "run_import.sh",
+            "program_type": "binary",
+            "working_directory": ".",
+            "default_priority": 3,
+            "default_weight": 1,
+            "failed_ok": false,
+            "requires": [
+                "ecotaxa"
+            ],
+            "settings_format": "ini",
+            "settings_schema": {
+                "type": "object",
+                "required": [
+                    "archivePath",
+                    "targetPath"
+                ],
+                "properties": {
+                    "archivePath": {
+                        "type": "string",
+                        "description": "The .zip to import, or the export task's output directory. A split export (several zips) all goes into the same project. Chain with {\"$from\": {\"task\": N, \"output\": \"export\"}}."
+                    },
+                    "targetPath": {
+                        "type": "string",
+                        "description": "Directory for import.json, which records the project id. Leave empty to let the Hub choose."
+                    },
+                    "projectId": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Import into this existing project. Leave unset to create a new one."
+                    },
+                    "projectTitle": {
+                        "type": "string",
+                        "default": "",
+                        "description": "Title for the new project. Empty uses the archive's name. Ignored when projectId is set."
+                    },
+                    "instrument": {
+                        "type": "string",
+                        "default": "Other camera",
+                        "description": "Instrument for a new project. Must be one EcoTaxa knows - there is no PIScO entry, so 'Other camera' is the generic that works."
+                    },
+                    "visible": {
+                        "type": "boolean",
+                        "default": true,
+                        "description": "Whether a newly created project is visible to all users."
+                    },
+                    "updateMode": {
+                        "type": "string",
+                        "default": "",
+                        "description": "Empty imports as new. 'Yes' updates existing data, 'Cla' also updates classifications. Use with skipExistingObjects to re-import without duplicating."
+                    },
+                    "skipExistingObjects": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "Skip objects already present, rather than adding them again."
+                    },
+                    "url": {
+                        "type": "string",
+                        "default": "",
+                        "description": "EcoTaxa base URL. Empty uses the local instance on loopback."
+                    }
+                }
+            },
+            "inputs": [
+                {
+                    "name": "archive",
+                    "kind": "directory",
+                    "settings_key": "archivePath",
+                    "description": "pisco_ecotaxa_export output containing the .zip"
+                }
+            ],
+            "outputs": [
+                {
+                    "name": "import",
+                    "kind": "directory",
+                    "settings_key": "targetPath",
+                    "description": "import.json recording the project id"
+                }
+            ]
         }
     ]
 }
