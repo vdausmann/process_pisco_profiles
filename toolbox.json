@@ -186,6 +186,68 @@
                     "description": "predictions.csv and optionally embeddings.npz"
                 }
             ]
+        },
+        {
+            "name": "pisco_ecotaxa_features",
+            "description": "Push ViT embeddings into EcoTaxa so its \"similar to\" filter works. Reduces them to the vector(50) the schema requires and writes obj_cnn_features_vector directly - there is no REST endpoint for features. Runs on the machine that owns the EcoTaxa database, so Postgres can stay on loopback.",
+            "tags": [
+                "pisco",
+                "ecotaxa",
+                "ml",
+                "similarity"
+            ],
+            "program_path": "run_features.sh",
+            "program_type": "binary",
+            "working_directory": ".",
+            "default_priority": 3,
+            "default_weight": 1,
+            "failed_ok": false,
+            "requires": [
+                "ecotaxa"
+            ],
+            "settings_format": "ini",
+            "settings_schema": {
+                "type": "object",
+                "required": [
+                    "embeddingsPath",
+                    "projectId",
+                    "pcaPath"
+                ],
+                "properties": {
+                    "embeddingsPath": {
+                        "type": "string",
+                        "description": "embeddings.npz from pisco_vit_classify, or that stage's output directory. Must come from the stage that saw EVERY object."
+                    },
+                    "projectId": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "EcoTaxa project to attach the features to. Its objects' orig_id must equal the object_id in the embeddings."
+                    },
+                    "pcaPath": {
+                        "type": "string",
+                        "description": "PCA basis .npz. Fitted and written on first use, loaded and reused afterwards. Keep one basis per encoder: projects reduced under different bases are not comparable, and the table has no field to tell them apart."
+                    },
+                    "dsn": {
+                        "type": "string",
+                        "default": "",
+                        "description": "Postgres connection string. Empty uses the local EcoTaxa stack on loopback."
+                    },
+                    "allowPartial": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "Write even when some objects would have no vector. EcoTaxa refuses to run a similarity search on such a project, so this is for debugging only."
+                    }
+                }
+            },
+            "inputs": [
+                {
+                    "name": "embeddings",
+                    "kind": "directory",
+                    "settings_key": "embeddingsPath",
+                    "description": "pisco_vit_classify output containing embeddings.npz"
+                }
+            ],
+            "outputs": []
         }
     ]
 }
