@@ -160,7 +160,7 @@
                         "type": "integer",
                         "minimum": 1,
                         "default": 64,
-                        "description": "Crops per GPU batch."
+                        "description": "Crops per GPU batch. 64 fits an 8 GB card in fp32; 256 is fine on a 3080 in fp16."
                     },
                     "topK": {
                         "type": "integer",
@@ -182,6 +182,21 @@
                         "type": "boolean",
                         "default": true,
                         "description": "With restrictToPath, keep the earlier stage's rows for objects this stage skips, so predictions.csv covers every object. Leave on: it lets a downstream task reference this stage alone, which matters because the Hub resolves $from inside dicts but not inside lists, so two references cannot be combined in one setting."
+                    },
+                    "workers": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Processes preprocessing crops while the GPU runs the previous batch. Leave unset for up to 8 (one less than the cores); 0 does it inline."
+                    },
+                    "precision": {
+                        "type": "string",
+                        "enum": [
+                            "auto",
+                            "fp16",
+                            "fp32"
+                        ],
+                        "default": "auto",
+                        "description": "auto runs fp16 on GPUs with tensor cores (RTX 3060/3080) and fp32 on Pascal (Tesla P4), where fp16 is slower."
                     }
                 }
             },
