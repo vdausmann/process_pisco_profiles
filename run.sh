@@ -46,6 +46,7 @@ PREDICTIONS="$(cfg predictionsPath)"
 TAXONOMY_MAP="$(cfg taxonomyMapPath)"
 SCALE_BAR="$(cfg scaleBar)"
 PIXEL_SIZE="$(cfg pixelSizeUm)"
+ISOLATE="$(cfg isolateCrops)"
 
 if [[ -z "$SOURCE_PATH" ]]; then
     echo "Error: sourcePath is required." >&2
@@ -64,6 +65,10 @@ ARGS=("$SOURCE_PATH" "-o" "$TARGET_PATH")
 [[ -n "$PREDICTIONS" ]] && ARGS+=("--predictions" "$PREDICTIONS")
 [[ -n "$TAXONOMY_MAP" ]] && ARGS+=("--taxonomy-map" "$TAXONOMY_MAP")
 [[ -n "$PIXEL_SIZE" ]] && ARGS+=("--pixel-size" "$PIXEL_SIZE")
+# Crop isolation is on by default; only an explicit falsey value turns it off.
+case "${ISOLATE,,}" in
+    0|false|no|off) ARGS+=("--no-isolate-crops") ;;
+esac
 # The scale bar is on by default, so only an explicit falsey value turns it off.
 case "${SCALE_BAR,,}" in
     0|false|no|off) ARGS+=("--no-scale-bar") ;;

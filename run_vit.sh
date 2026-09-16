@@ -45,7 +45,8 @@ ARGS=("$SOURCE_PATH" "-o" "$TARGET_PATH" "--model" "$MODEL_PATH")
 [[ -n "$TOPK" ]] && ARGS+=("--top-k" "$TOPK")
 [[ -n "$RESTRICT_TO" ]] && ARGS+=("--restrict-to" "$RESTRICT_TO")
 [[ -n "$RESTRICT_LABELS" ]] && ARGS+=("--restrict-labels" "$RESTRICT_LABELS")
-case "${ISOLATE,,}" in 1|true|yes|on) ARGS+=("--isolate-crops") ;; esac
+# isolation is on by default; only an explicit falsey value turns it off.
+case "${ISOLATE,,}" in 0|false|no|off) ARGS+=("--no-isolate-crops") ;; esac
 case "${EMIT,,}" in 1|true|yes|on) ARGS+=("--emit-embeddings") ;; esac
 # carry-forward is on by default; only an explicit falsey value turns it off.
 case "${CARRY_FORWARD,,}" in 0|false|no|off) ARGS+=("--no-carry-forward") ;; esac

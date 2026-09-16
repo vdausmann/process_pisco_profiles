@@ -86,6 +86,11 @@
                         "type": "string",
                         "default": "",
                         "description": "ecotaxa_taxonomy_map.json. Required when predictionsPath is set: the TSV carries numeric EcoTaxa taxon ids (object_annotation_category_id), not label names, because names are ambiguous. Export fails if the map still has unresolved labels."
+                    },
+                    "isolateCrops": {
+                        "type": "boolean",
+                        "default": true,
+                        "description": "Write each crop as the object alone in a tight box, everything outside its mask white - the crop the python route saved and the classifier was trained on. Off writes the segmenter's stored box as-is, with its padding and any neighbours."
                     }
                 }
             },
@@ -148,8 +153,8 @@
                     },
                     "isolateCrops": {
                         "type": "boolean",
-                        "default": false,
-                        "description": "Mask neighbouring objects out to white using the segmenter's own mask. MUST match how the model was trained - the ATAIIR2604 models were trained on isolated crops, the older ViT_custom_size_sensitive pair was not. Getting this wrong is an out-of-domain shift, not a cosmetic difference."
+                        "default": true,
+                        "description": "Cut each crop to its mask's box and white out everything outside the mask - the crop the python route saved and the ViTs were trained on. Off feeds the segmenter's stored box as-is, with its padding and any neighbours in it."
                     },
                     "emitEmbeddings": {
                         "type": "boolean",

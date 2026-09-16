@@ -41,6 +41,8 @@ from pathlib import Path
 
 import h5py
 import numpy as np
+
+from crops import tight_masked
 import torch
 import torchvision.transforms.functional as TF
 from PIL import Image
@@ -83,9 +85,11 @@ def iter_crops(h5_path: Path, isolate: bool, keep: set[str] | None):
     """Yield (object_id, crop) for every object, in frame order.
 
     Crops are stored bright on a dark ground; inverted here so the model sees
-    what it was trained on. ``isolate`` masks neighbours out to white using the
-    segmenter's own mask -- one of the axes a classifier is bound to, so it has
-    to match the training regime.
+    what it was trained on. ``isolate`` cuts each crop to its mask's bounding
+    box and whites out everything outside the mask - the crop the python route
+    saved and the ViTs were trained on. Off, the model sees the stored box
+    as-is, with the segmenter's padding and any neighbours in it. One of the
+    axes a classifier is bound to, so it has to match the training regime.
     """
     with h5py.File(h5_path, "r") as f:
         for frame in sorted(f.keys()):
@@ -109,7 +113,7 @@ def iter_crops(h5_path: Path, isolate: bool, keep: set[str] | None):
                 crop = (255 - pixels[off:off + n_px].reshape(h, w)).astype(np.uint8)
                 if masks is not None:
                     mask = masks[off:off + n_px].reshape(h, w)
-                    crop = np.where(mask > 0, crop, 255).astype(np.uint8)
+                    crop, _, _, _ = tight_masked(crop, mask)
                 yield object_id, crop
 
 
@@ -230,9 +234,10 @@ def main() -> int:
     ap.add_argument("-o", "--output", required=True, help="output directory")
     ap.add_argument("--model", required=True,
                     help="model directory, or a Hugging Face repo id")
-    ap.add_argument("--isolate-crops", action="store_true",
-                    help="mask neighbours out to white using the segmenter's "
-                         "mask. Must match how the model was trained.")
+    ap.add_argument("--isolate-crops", action=argparse.BooleanOptionalAction, default=True,
+                    help="Cut each crop to its mask and white out the rest, as the python "
+                         "route saved crops and the ViTs were trained. --no-isolate-crops "
+                         "feeds the stored box as-is.")
     ap.add_argument("--batch-size", type=int, default=64)
     ap.add_argument("--top-k", type=int, default=5)
     ap.add_argument("--emit-embeddings", action="store_true",
