@@ -29,6 +29,8 @@ ISOLATE="$(cfg isolateCrops)"
 EMIT="$(cfg emitEmbeddings)"
 BATCH="$(cfg batchSize)"
 TOPK="$(cfg topK)"
+WORKERS="$(cfg workers)"
+PRECISION="$(cfg precision)"
 RESTRICT_TO="$(cfg restrictToPath)"
 RESTRICT_LABELS="$(cfg restrictLabels)"
 CARRY_FORWARD="$(cfg carryForward)"
@@ -43,6 +45,8 @@ done
 ARGS=("$SOURCE_PATH" "-o" "$TARGET_PATH" "--model" "$MODEL_PATH")
 [[ -n "$BATCH" ]] && ARGS+=("--batch-size" "$BATCH")
 [[ -n "$TOPK" ]] && ARGS+=("--top-k" "$TOPK")
+[[ -n "$WORKERS" ]] && ARGS+=("--workers" "$WORKERS")
+[[ -n "$PRECISION" ]] && ARGS+=("--precision" "$PRECISION")
 [[ -n "$RESTRICT_TO" ]] && ARGS+=("--restrict-to" "$RESTRICT_TO")
 [[ -n "$RESTRICT_LABELS" ]] && ARGS+=("--restrict-labels" "$RESTRICT_LABELS")
 case "${ISOLATE,,}" in 1|true|yes|on) ARGS+=("--isolate-crops") ;; esac

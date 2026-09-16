@@ -35,6 +35,9 @@ the processing workers.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import os
+import time
 import csv
 import sys
 from pathlib import Path
@@ -154,12 +157,106 @@ def load_restriction(path: Path, labels: set[str]) -> tuple[set[str], list[dict]
     return keep, carried
 
 
+def index_crops(h5_path: Path, keep: set[str] | None) -> list[tuple[str, int, int, int, int]]:
+    """Every object as (frame, index, w, h, offset), in the order iter_crops
+    would yield them -- read from the bounding-box tables alone, so the
+    pixels are only touched by whoever loads the crop."""
+    wanted = wanted_by_frame(keep)
+    items = []
+    with h5py.File(h5_path, "r") as f:
+        for frame in sorted(f.keys()):
+            if wanted is not None and frame not in wanted:
+                continue
+            group = f[frame]
+            if not isinstance(group, h5py.Group) or "boundingBoxW" not in group:
+                continue
+            widths = np.asarray(group["boundingBoxW"])
+            heights = np.asarray(group["boundingBoxH"])
+            offsets = np.asarray(group["offsets"])
+            n_pixels = group["cropPixelData"].shape[0]
+            for i in range(len(offsets)):
+                if wanted is not None and i not in wanted[frame]:
+                    continue
+                w, h, off = int(widths[i]), int(heights[i]), int(offsets[i])
+                if w <= 0 or h <= 0 or off + w * h > n_pixels:
+                    continue
+                items.append((frame, i, w, h, off))
+    return items
+
+
+class CropDataset(torch.utils.data.Dataset):
+    """Crops as model-ready tensors, loadable from DataLoader workers.
+
+    Each worker opens the HDF5 file itself and keeps the last frame's pixel
+    arrays, so consecutive crops of one frame cost one read. The crop is
+    inverted (and isolated if asked) exactly as iter_crops does it.
+    """
+
+    def __init__(self, h5_path: Path, items, isolate: bool):
+        self.h5_path, self.items, self.isolate = h5_path, items, isolate
+        self._file = None
+        self._frame = None
+        self._pixels = None
+        self._masks = None
+
+    def __len__(self):
+        return len(self.items)
+
+    def _arrays(self, frame):
+        if self._file is None:
+            self._file = h5py.File(self.h5_path, "r")
+        if frame != self._frame:
+            group = self._file[frame]
+            self._pixels = np.asarray(group["cropPixelData"])
+            self._masks = (np.asarray(group["maskPixelData"])
+                           if self.isolate and "maskPixelData" in group else None)
+            self._frame = frame
+        return self._pixels, self._masks
+
+    def __getitem__(self, idx):
+        frame, i, w, h, off = self.items[idx]
+        pixels, masks = self._arrays(frame)
+        n_px = w * h
+        crop = (255 - pixels[off:off + n_px].reshape(h, w)).astype(np.uint8)
+        if masks is not None:
+            mask = masks[off:off + n_px].reshape(h, w)
+            crop = np.where(mask > 0, crop, 255).astype(np.uint8)
+        tensor = preprocess(crop)
+        return f"{frame}_{i + 1}", tensor
+
+
+def _collate(samples):
+    """Drop crops preprocess() refused; count them."""
+    kept = [(oid, t) for oid, t in samples if t is not None]
+    skipped = len(samples) - len(kept)
+    if not kept:
+        return [], None, skipped
+    return [oid for oid, _ in kept], torch.stack([t for _, t in kept]), skipped
+
+
+def choose_precision(precision: str, device: str) -> torch.dtype | None:
+    """fp16 autocast where it pays: tensor cores (compute capability 7.0+).
+    A Pascal card runs fp16 slower than fp32, so 'auto' keeps fp32 there."""
+    if device != "cuda" or precision == "fp32":
+        return None
+    if precision == "fp16":
+        return torch.float16
+    major, _ = torch.cuda.get_device_capability()
+    return torch.float16 if major >= 7 else None
+
+
 def classify(h5_path: Path, out_dir: Path, model_path: str, *,
              isolate: bool = False, batch_size: int = 64, top_k: int = 5,
              emit_embeddings: bool = False, keep: set[str] | None = None,
-             carried: list[dict] | None = None) -> int:
+             carried: list[dict] | None = None, workers: int | None = None,
+             precision: str = "auto") -> int:
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"  device: {device}")
+    dtype = choose_precision(precision, device)
+    if workers is None:
+        workers = min(8, max(1, (os.cpu_count() or 2) - 1))
+    print(f"  device: {device}"
+          + (f" ({torch.cuda.get_device_name(0)})" if device == "cuda" else "")
+          + f", {'fp16 autocast' if dtype else 'fp32'}, {workers} loader worker(s)")
     model = ViTForImageClassification.from_pretrained(model_path).to(device).eval()
     id2label = model.config.id2label
     k = min(top_k, len(id2label))
@@ -169,43 +266,45 @@ def classify(h5_path: Path, out_dir: Path, model_path: str, *,
     rows: list[dict] = []
     ids: list[str] = []
     embeddings: list[np.ndarray] = []
-    batch_ids: list[str] = []
-    batch: list[torch.Tensor] = []
     n_skipped = 0
 
-    def flush():
-        if not batch:
-            return
-        pixel_values = torch.stack(batch).to(device)
-        with torch.no_grad():
+    # Preprocessing runs in worker processes while the GPU is busy with the
+    # previous batch; the main process only stacks and forwards.
+    items = index_crops(h5_path, keep)
+    loader = torch.utils.data.DataLoader(
+        CropDataset(h5_path, items, isolate), batch_size=batch_size,
+        num_workers=workers, pin_memory=(device == "cuda"), collate_fn=_collate,
+        persistent_workers=False)
+    autocast = (torch.autocast("cuda", dtype=dtype) if dtype
+                else contextlib.nullcontext())
+    done = 0
+    started = time.perf_counter()
+    for batch_ids, pixel_values, skipped in loader:
+        n_skipped += skipped
+        if pixel_values is None:
+            continue
+        pixel_values = pixel_values.to(device, non_blocking=True)
+        with torch.inference_mode(), autocast:
             # Call the encoder directly so the embedding is exactly the tensor
             # the classification head consumes, from a single forward pass.
             encoded = model.vit(pixel_values).last_hidden_state[:, 0]
             logits = model.classifier(encoded)
             probs = torch.softmax(logits.float(), dim=-1)
             top = torch.topk(probs, k, dim=-1)
+        top_indices, top_values = top.indices.cpu(), top.values.cpu()
         for j, object_id in enumerate(batch_ids):
             row = {"object_id": object_id}
             for rank in range(k):
-                row[f"top{rank + 1}"] = id2label[int(top.indices[j, rank])]
-                row[f"prob{rank + 1}"] = f"{float(top.values[j, rank]):.6f}"
+                row[f"top{rank + 1}"] = id2label[int(top_indices[j, rank])]
+                row[f"prob{rank + 1}"] = f"{float(top_values[j, rank]):.6f}"
             rows.append(row)
         if emit_embeddings:
             ids.extend(batch_ids)
             embeddings.append(encoded.float().cpu().numpy())
-        batch.clear()
-        batch_ids.clear()
-
-    for object_id, crop in iter_crops(h5_path, isolate, keep):
-        tensor = preprocess(crop)
-        if tensor is None:
-            n_skipped += 1
-            continue
-        batch.append(tensor)
-        batch_ids.append(object_id)
-        if len(batch) >= batch_size:
-            flush()
-    flush()
+        done += len(batch_ids)
+        if done % 2000 < len(batch_ids) or done == len(items):
+            rate = done / (time.perf_counter() - started)
+            print(f"  {done}/{len(items)} crops ({rate:.0f}/s)", flush=True)
 
     if carried:
         # Rows this stage skipped, kept verbatim so the file covers every
@@ -255,6 +354,11 @@ def main() -> int:
                          "mask. Must match how the model was trained.")
     ap.add_argument("--batch-size", type=int, default=64)
     ap.add_argument("--top-k", type=int, default=5)
+    ap.add_argument("--workers", type=int, default=None,
+                    help="processes preprocessing crops while the GPU runs "
+                         "(default: up to 8, one less than the cores)")
+    ap.add_argument("--precision", choices=["auto", "fp16", "fp32"], default="auto",
+                    help="auto uses fp16 only on GPUs with tensor cores")
     ap.add_argument("--emit-embeddings", action="store_true",
                     help="write the encoder CLS vectors, for EcoTaxa "
                          "similarity search. Use on the stage that sees every "
@@ -321,7 +425,8 @@ def main() -> int:
     n = classify(src, Path(args.output), model_path,
                  isolate=args.isolate_crops, batch_size=args.batch_size,
                  top_k=args.top_k, emit_embeddings=args.emit_embeddings,
-                 keep=keep, carried=carried)
+                 keep=keep, carried=carried, workers=args.workers,
+                 precision=args.precision)
     if n == 0:
         print("ERROR: nothing classified", file=sys.stderr)
         return 1
