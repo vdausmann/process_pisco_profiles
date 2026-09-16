@@ -70,6 +70,7 @@ from PIL import Image
 # utils.py imports torch and transformers at module scope, and the
 # processing workers have neither.
 from scale_bar import PIXEL_SIZE_UM, SCALE_BAR_STRIP_H, save_crop_with_scale_bar
+from crops import tight_masked
 from skimage import measure
 
 # --- constants shared with utils.py, duplicated to keep this import-light ----
@@ -338,6 +339,7 @@ def export(
     pixel_size_um: float = PIXEL_SIZE_UM,
     predictions: dict | None = None,
     prediction_model: str = "",
+    isolate: bool = True,
 ) -> tuple[Path, Path, int]:
     """Write crops and an EcoTaxa TSV. Returns (crop_dir, tsv_path, n_objects)."""
     profile = profile_name or h5_path.parent.name
@@ -394,6 +396,14 @@ def export(
                 # this would flip min/max/mean_intensity, int_density and range
                 # relative to exports from the other route.
                 crop = (255 - crops[off:off + n_px].reshape(h, w)).astype(np.uint8)
+                mask = masks[off:off + n_px].reshape(h, w) if masks is not None else None
+                x, y = int(bb_x[i]), int(bb_y[i])
+                if isolate and mask is not None:
+                    # The stored box carries 30 px of frame for the deconvolution
+                    # model; the crop EcoTaxa and the classifier see is the
+                    # object alone in a tight box, as the python route saved it.
+                    crop, mask, dx, dy = tight_masked(crop, mask)
+                    x, y, h, w = x + dx, y + dy, crop.shape[0], crop.shape[1]
                 object_id = f"{frame}_{i + 1}"
                 rel_img = f"{object_id}.{image_ext}"
                 if scale_bar:
@@ -417,8 +427,8 @@ def export(
                     "object_lon": meta["lon"],
                     "object_pressure": meta["pressure"],
                     "object_temperature": meta["temperature"],
-                    "object_x": int(bb_x[i]),
-                    "object_y": int(bb_y[i]),
+                    "object_x": x,
+                    "object_y": y,
                     "object_width": w,
                     "object_height": h,
                     "sample_id": profile,
@@ -457,8 +467,7 @@ def export(
                     row["object_depth_min"] = round(depth, 3)
                     row["object_depth_max"] = round(depth, 3)
 
-                if masks is not None:
-                    mask = masks[off:off + n_px].reshape(h, w)
+                if mask is not None:
                     feats = region_features(mask, crop)
                     row.update(feats)
                     if "object_area_exc" in feats:
@@ -584,6 +593,11 @@ def main() -> int:
     ap.add_argument("--workflow-id", default=None,
                     help="Workflow the results came from. Read from the path "
                          "when it is a Hub output; only needed otherwise.")
+    ap.add_argument("--isolate-crops", action=argparse.BooleanOptionalAction, default=True,
+                    help="Write each crop as the object alone in a tight box, everything "
+                         "outside its mask white - the crop the python route saved and the "
+                         "classifier was trained on. --no-isolate-crops writes the stored "
+                         "box as-is, neighbours and the segmenter's padding included.")
     ap.add_argument("--no-zip", action="store_true",
                     help="write crops and TSV but skip archiving")
     args = ap.parse_args()
@@ -626,7 +640,8 @@ def main() -> int:
         absolute_pressure=not args.gauge_pressure,
         link_base=args.link_base, workflow_id=args.workflow_id,
         scale_bar=args.scale_bar, pixel_size_um=args.pixel_size,
-        predictions=predictions, prediction_model=prediction_model)
+        predictions=predictions, prediction_model=prediction_model,
+        isolate=args.isolate_crops)
 
     if n == 0:
         print("ERROR: no objects exported", file=sys.stderr)
