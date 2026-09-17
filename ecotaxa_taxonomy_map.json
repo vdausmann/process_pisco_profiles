@@ -1,7 +1,11 @@
 {
   "_comment": "Model label -> EcoTaxa taxon id. Entries with a null id must be resolved by hand before use; loading this map will refuse them. Rebuild with ecotaxa_taxonomy_map.py build, re-check with check. Ambiguous entries carry a note saying what was rejected and why.",
-  "source_model": "Veit/diplo-vit-plankton",
+  "source_model": "Veit/M181_binary + Veit/M181_multiclass + Veit/ATAIIR2604_NorthSea_binary + Veit/ATAIIR2604_NorthSea_multiclass",
   "labels": {
+    "Appendicularia": {
+      "id": 85123,
+      "display_name": "Appendicularia<Tunicata"
+    },
     "Asteroidea larvae": {
       "id": 12877,
       "display_name": "Asteroidea<Asterozoa"
@@ -14,14 +18,57 @@
       "id": 11514,
       "display_name": "Chaetognatha<Animalia"
     },
+    "Cnidaria": {
+      "id": 11512,
+      "display_name": "Cnidaria<Animalia",
+      "note": "ATAIIR2604 label. Phylum node; NOT 25984 'Cnidaria sp.' or the morpho X/XX bins."
+    },
+    "Cnidaria<Metazoa": {
+      "id": 11512,
+      "display_name": "Cnidaria<Animalia"
+    },
+    "Copepoda": {
+      "id": 25828,
+      "display_name": "Copepoda<Multicrustacea",
+      "note": "phylogenetic Class, matching ECOTAXA_TAXON_MAP in utils.py. NOT 94508, the morphological category."
+    },
+    "Ctenophora": {
+      "id": 11511,
+      "display_name": "Ctenophora<Animalia",
+      "note": "ATAIIR2604 label; same comb-jelly node as Ctenophora_Metazoa. NOT 17513 Ctenophora<Fragilariaceae (a diatom)."
+    },
     "Ctenophora_Metazoa": {
       "id": 11511,
       "display_name": "Ctenophora<Animalia",
       "note": "comb jellies. NOT 17513 Ctenophora<Fragilariaceae, which is a diatom."
     },
+    "Eumalacostraca": {
+      "id": 25824,
+      "display_name": "Eumalacostraca"
+    },
+    "gelatinous": {
+      "id": 85070,
+      "display_name": "gelatinous",
+      "note": "ATAIIR2604 label; EcoTaxa's morpho category of the same name, unique match."
+    },
+    "living": {
+      "id": 1,
+      "display_name": "Biota",
+      "note": "the binary stage's positive verdict. Biota is EcoTaxa's root of everything alive; the taxon stage refines it where it ran, and objects it did not reach still arrive as 'alive, unsorted' rather than blank."
+    },
     "Noctiluca sp.": {
       "id": 58408,
       "display_name": "Noctiluca<Noctilucaceae"
+    },
+    "not-living": {
+      "id": 84960,
+      "display_name": "not-living",
+      "note": "the binary stage's negative verdict, which IS a real EcoTaxa category, so those objects arrive labelled rather than blank."
+    },
+    "pluteus": {
+      "id": 93470,
+      "display_name": "pluteus<Echinodermata",
+      "note": "ATAIIR2604 label; the model does not separate echinoid (85000) from ophiuroid (84999) plutei, so the phylum-level pluteus node."
     },
     "Pyrocystis": {
       "id": 58550,
@@ -31,40 +78,13 @@
       "id": 342,
       "display_name": "Rhizaria"
     },
-    "Trichodesmium": {
-      "id": 8976,
-      "display_name": "Trichodesmium"
-    },
-    "Appendicularia": {
-      "id": 85123,
-      "display_name": "Appendicularia<Tunicata"
-    },
-    "Copepoda": {
-      "id": 25828,
-      "display_name": "Copepoda<Multicrustacea",
-      "note": "phylogenetic Class, matching ECOTAXA_TAXON_MAP in utils.py. NOT 94508, the morphological category."
-    },
     "Thaliacea": {
       "id": 16659,
       "display_name": "Thaliacea"
     },
-    "Cnidaria<Metazoa": {
-      "id": 11512,
-      "display_name": "Cnidaria<Animalia"
-    },
-    "Eumalacostraca": {
-      "id": 25824,
-      "display_name": "Eumalacostraca"
-    },
-    "living": {
-      "id": 1,
-      "display_name": "Biota",
-      "note": "the binary stage's positive verdict. Biota is EcoTaxa's root of everything alive; the taxon stage refines it where it ran, and objects it did not reach still arrive as 'alive, unsorted' rather than blank."
-    },
-    "not-living": {
-      "id": 84960,
-      "display_name": "not-living",
-      "note": "the binary stage's negative verdict, which IS a real EcoTaxa category, so those objects arrive labelled rather than blank."
+    "Trichodesmium": {
+      "id": 8976,
+      "display_name": "Trichodesmium"
     }
   }
 }
