@@ -149,7 +149,7 @@
                     },
                     "modelPath": {
                         "type": "string",
-                        "description": "Model directory on this machine, or a Hugging Face repo id (e.g. Veit/diplo-vit-plankton). This is the stage's model: the binary one for the first pass, the taxon one for the second."
+                        "description": "Model directory on this machine, or a Hugging Face repo id (e.g. Veit/diplo-vit-plankton). This is the stage's model: the binary one for the first pass, the taxon one for the second. A pisco_vit_train output directory also works - its best_model/ is found automatically - so a retrained model can be chained straight in with {\"$from\": {\"task\": N, \"output\": \"model\"}}."
                     },
                     "isolateCrops": {
                         "type": "boolean",
@@ -165,7 +165,7 @@
                         "type": "integer",
                         "minimum": 1,
                         "default": 64,
-                        "description": "Crops per GPU batch."
+                        "description": "Crops per GPU batch. 64 fits an 8 GB card in fp32; 256 is fine on a 3080 in fp16."
                     },
                     "topK": {
                         "type": "integer",
@@ -187,6 +187,21 @@
                         "type": "boolean",
                         "default": true,
                         "description": "With restrictToPath, keep the earlier stage's rows for objects this stage skips, so predictions.csv covers every object. Leave on: it lets a downstream task reference this stage alone, which matters because the Hub resolves $from inside dicts but not inside lists, so two references cannot be combined in one setting."
+                    },
+                    "workers": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Processes preprocessing crops while the GPU runs the previous batch. Leave unset for up to 8 (one less than the cores); 0 does it inline."
+                    },
+                    "precision": {
+                        "type": "string",
+                        "enum": [
+                            "auto",
+                            "fp16",
+                            "fp32"
+                        ],
+                        "default": "auto",
+                        "description": "auto runs fp16 on GPUs with tensor cores (RTX 3060/3080) and fp32 on Pascal (Tesla P4), where fp16 is slower."
                     }
                 }
             },
@@ -357,6 +372,243 @@
                     "kind": "directory",
                     "settings_key": "targetPath",
                     "description": "import.json recording the project id"
+                }
+            ]
+        },
+        {
+            "name": "pisco_ecotaxa_labels",
+            "description": "Fetch validated labels out of an EcoTaxa project, as the starting point for retraining the dual ViT. Writes labels.csv: one row per validated object, giving the crop's identity and the taxon a human confirmed. Only validated objects are taken - predicted ones carry this pipeline's own output, and training on those would teach the model its own mistakes. Runs on the EcoTaxa machine because credentials live there rather than in task settings.",
+            "tags": [
+                "pisco",
+                "ecotaxa",
+                "ml",
+                "training"
+            ],
+            "program_path": "run_labels.sh",
+            "program_type": "binary",
+            "working_directory": ".",
+            "default_priority": 3,
+            "default_weight": 1,
+            "failed_ok": false,
+            "requires": [
+                "ecotaxa"
+            ],
+            "settings_format": "ini",
+            "settings_schema": {
+                "type": "object",
+                "required": [
+                    "projectIds",
+                    "targetPath"
+                ],
+                "properties": {
+                    "projectIds": {
+                        "type": "string",
+                        "description": "EcoTaxa project ids, comma-separated, in priority order. The LAST project wins on a duplicate crop: EcoTaxa subsets are copies, so the same crop appears in a project and in every subset drawn from it, and letting the later one win means a re-validation supersedes the original call."
+                    },
+                    "targetPath": {
+                        "type": "string",
+                        "description": "Directory for labels.csv and labels.json. Leave empty to let the Hub choose."
+                    },
+                    "statusFilter": {
+                        "type": "string",
+                        "default": "V",
+                        "description": "EcoTaxa status to fetch: V validated, P predicted, D dubious, empty for all. Leave at V for training - anything else feeds the model its own predictions back."
+                    },
+                    "url": {
+                        "type": "string",
+                        "default": "",
+                        "description": "EcoTaxa base URL. Empty uses the local instance on loopback."
+                    }
+                }
+            },
+            "outputs": [
+                {
+                    "name": "labels",
+                    "kind": "directory",
+                    "settings_key": "targetPath",
+                    "description": "labels.csv, plus labels.json with the class histogram"
+                }
+            ]
+        },
+        {
+            "name": "pisco_vit_trainset",
+            "description": "Assemble a dual-ViT training set from validated labels and the run those objects came from. Writes two imagefolders - binary/ (living vs not-living) and multiclass/ (the living taxa) - ready for pisco_vit_train. Crops are read from the segmenter's result.h5 through the same code path inference uses, so the training crops are the crops the classifier will see; the old python pipeline's deconv_crops zips are also accepted, which is how already-validated pre-Hub projects can still be trained from. EcoTaxa export zips are deliberately not a source: their PNGs carry a scale bar.",
+            "tags": [
+                "pisco",
+                "ml",
+                "vit",
+                "training"
+            ],
+            "program_path": "run_trainset.sh",
+            "program_type": "binary",
+            "working_directory": ".",
+            "default_priority": 3,
+            "default_weight": 4,
+            "failed_ok": false,
+            "requires": [
+                "pisco-tools"
+            ],
+            "settings_format": "ini",
+            "settings_schema": {
+                "type": "object",
+                "required": [
+                    "labelsPath",
+                    "cropsPath",
+                    "targetPath"
+                ],
+                "properties": {
+                    "labelsPath": {
+                        "type": "string",
+                        "description": "labels.csv from pisco_ecotaxa_labels, or that task's output directory. Chain with {\"$from\": {\"task\": N, \"output\": \"labels\"}}."
+                    },
+                    "cropsPath": {
+                        "type": "string",
+                        "description": "Comma-separated roots holding the images these labels describe: segmenter results directories (searched for result.h5) and/or old-pipeline output holding deconv_crops*.zip. Point this at the run the EcoTaxa objects were exported from."
+                    },
+                    "targetPath": {
+                        "type": "string",
+                        "description": "Directory for binary/, multiclass/ and trainset.json. Leave empty to let the Hub choose."
+                    },
+                    "isolateCrops": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "Mask neighbouring objects out to white when reading from HDF5. This is one of the axes a classifier is bound to: set it to the isolateCrops the trained model will be RUN with in pisco_vit_classify. Getting it wrong is an out-of-domain shift, not a cosmetic difference."
+                    },
+                    "nonLiving": {
+                        "type": "string",
+                        "default": "Unknowns,not-living",
+                        "description": "Comma-separated classes forming the binary not-living side; everything else counts as living. bubble and t001 belong here when present - they are imaging artifacts, and calling them living reintroduces the false positives the not-living screening removes."
+                    },
+                    "excludeMulticlass": {
+                        "type": "string",
+                        "default": "",
+                        "description": "Comma-separated living classes to leave out of the multiclass set, e.g. 'multiple species': fused objects are a segmentation problem, not something to ask the classifier to name."
+                    },
+                    "minPerClass": {
+                        "type": "integer",
+                        "minimum": 3,
+                        "default": 20,
+                        "description": "Drop a multiclass class with fewer crops than this. Below it a class cannot be split into train/validation/test, and its reported F1 says nothing about model quality."
+                    }
+                }
+            },
+            "inputs": [
+                {
+                    "name": "labels",
+                    "kind": "directory",
+                    "settings_key": "labelsPath",
+                    "description": "pisco_ecotaxa_labels output holding labels.csv"
+                }
+            ],
+            "outputs": [
+                {
+                    "name": "trainset",
+                    "kind": "directory",
+                    "settings_key": "targetPath",
+                    "description": "binary/ and multiclass/ imagefolders, plus trainset.json recording how the set was built"
+                }
+            ]
+        },
+        {
+            "name": "pisco_vit_train",
+            "description": "Fine-tune one stage of the dual ViT on a training set from pisco_vit_trainset. Run it twice against the same trainset - stage=binary and stage=multiclass - because the two stages start from different checkpoints and answer different questions. Writes best_model/, which pisco_vit_classify can be pointed straight at, plus eval_report.json with per-class precision/recall and the confusion matrix. Preprocessing is asserted at startup to match the inference path exactly, so the trained model and the classifier cannot drift apart.",
+            "tags": [
+                "pisco",
+                "ml",
+                "vit",
+                "training"
+            ],
+            "program_path": "run_train.sh",
+            "program_type": "binary",
+            "working_directory": ".",
+            "default_priority": 3,
+            "default_weight": 10,
+            "failed_ok": false,
+            "requires": [
+                "pisco-tools",
+                "gpu"
+            ],
+            "settings_format": "ini",
+            "settings_schema": {
+                "type": "object",
+                "required": [
+                    "dataPath",
+                    "initModel",
+                    "targetPath"
+                ],
+                "properties": {
+                    "dataPath": {
+                        "type": "string",
+                        "description": "pisco_vit_trainset output directory, or an imagefolder directly. Chain with {\"$from\": {\"task\": N, \"output\": \"trainset\"}}."
+                    },
+                    "stage": {
+                        "type": "string",
+                        "default": "",
+                        "description": "Which half of the trainset to train: 'binary' or 'multiclass'. Leave empty when dataPath already points at an imagefolder."
+                    },
+                    "initModel": {
+                        "type": "string",
+                        "description": "Checkpoint to fine-tune: a model directory on this machine, or a Hugging Face repo id. Use the previous model for this stage - its head is reinitialised automatically when the class set differs. Training from google/vit-base-patch16-224-in21k instead wants a learningRate of roughly 2e-4."
+                    },
+                    "targetPath": {
+                        "type": "string",
+                        "description": "Directory for best_model/, eval_report.json and labels.json. Leave empty to let the Hub choose."
+                    },
+                    "epochs": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "default": 30,
+                        "description": "Passes over the training split. The checkpoint kept is the one with the best validation accuracy, not the last."
+                    },
+                    "learningRate": {
+                        "type": "number",
+                        "minimum": 0,
+                        "default": 5e-05,
+                        "description": "AdamW learning rate, decayed linearly to zero with no warmup. 5e-5 suits fine-tuning an existing model."
+                    },
+                    "batchSize": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "default": 16,
+                        "description": "Crops per GPU batch."
+                    },
+                    "seed": {
+                        "type": "integer",
+                        "default": 42,
+                        "description": "Seeds the stratified 70/15/15 split and the training run, so a rerun on the same trainset is reproducible."
+                    },
+                    "workers": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "default": 4,
+                        "description": "Dataloader worker processes decoding and augmenting crops."
+                    },
+                    "precision": {
+                        "type": "string",
+                        "enum": [
+                            "auto",
+                            "fp16",
+                            "fp32"
+                        ],
+                        "default": "auto",
+                        "description": "auto uses fp16 only where the GPU has tensor cores (compute capability 7.0+). On Pascal cards such as the Tesla P4 fp16 is slower than fp32, so auto correctly stays in fp32 there."
+                    }
+                }
+            },
+            "inputs": [
+                {
+                    "name": "trainset",
+                    "kind": "directory",
+                    "settings_key": "dataPath",
+                    "description": "pisco_vit_trainset output"
+                }
+            ],
+            "outputs": [
+                {
+                    "name": "model",
+                    "kind": "directory",
+                    "settings_key": "targetPath",
+                    "description": "best_model/ (point pisco_vit_classify's modelPath at it), eval_report.json, labels.json"
                 }
             ]
         }
