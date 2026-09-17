@@ -86,10 +86,7 @@ def to_load_area_path(archive: Path, shared_root: str, prefix: str) -> str:
     return f"{prefix.rstrip('/')}/{relative}"
 
 
-# Shown first in EcoTaxa's sorting tools and in the hover popover; everything
-# else the export carries follows alphabetically.
-LEAD_FIELDS = ["esd", "area", "prediction_score", "pressure", "temperature",
-               "major_axis_len", "minor_axis_len", "mean_intensity"]
+# Shown in the hover popover of the classification screen.
 POPOVER_FIELDS = ["esd", "area", "prediction_score", "pressure"]
 
 
@@ -100,15 +97,15 @@ def sorting_tools(project: dict) -> tuple[str, str]:
     free column (n01, n02, ...), which makes it sortable through the API -
     but the GUI's sort dropdown only offers what the project's
     classiffieldlist names, and an import leaves that empty. Both lists are
-    newline-separated ``field=label`` (BO/Project.py splits on that), the
-    field being the mapped column name.
+    newline-separated ``name=label`` lines keyed by the free column's *name*
+    (``esd=esd``); the frontend resolves the name to its nXX column itself
+    and silently drops keys it does not know. The GUI shows them sorted by
+    label, so order here does not matter.
     """
     mapping = project.get("obj_free_cols") or {}
-    numeric = {name: col for name, col in mapping.items() if str(col).startswith("n")}
-    ordered = [n for n in LEAD_FIELDS if n in numeric] + \
-              sorted(n for n in numeric if n not in LEAD_FIELDS)
-    sort_lines = ["depth_min=depth"] + [f"{numeric[n]}={n}" for n in ordered]
-    pop_lines = [f"{numeric[n]}={n}" for n in POPOVER_FIELDS if n in numeric] + ["depth_min=depth"]
+    numeric = sorted(name for name, col in mapping.items() if str(col).startswith("n"))
+    sort_lines = ["depth_min=depth"] + [f"{n}={n}" for n in numeric]
+    pop_lines = [f"{n}={n}" for n in POPOVER_FIELDS if n in mapping] + ["depth_min=depth"]
     return "\n".join(sort_lines), "\n".join(pop_lines)
 
 
