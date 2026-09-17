@@ -57,9 +57,9 @@
       "display_name": "Eumalacostraca"
     },
     "living": {
-      "id": null,
-      "skip": true,
-      "note": "binary gate, not a taxon. The only matches are living<t011 and living<Chydoridae, neither meaningful."
+      "id": 1,
+      "display_name": "Biota",
+      "note": "the binary stage's positive verdict. Biota is EcoTaxa's root of everything alive; the taxon stage refines it where it ran, and objects it did not reach still arrive as 'alive, unsorted' rather than blank."
     },
     "not-living": {
       "id": 84960,
