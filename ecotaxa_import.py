@@ -44,10 +44,10 @@ DEFAULT_LOAD_AREA_PREFIX = "/pisco"
 TERMINAL_STATES = {"F", "E", "A"}
 
 
-def api(base, path, data=None, token=None, timeout=600):
+def api(base, path, data=None, token=None, timeout=600, method=None):
     request = urllib.request.Request(
         base.rstrip("/") + "/api" + path,
-        method="POST" if data is not None else "GET",
+        method=method or ("POST" if data is not None else "GET"),
         data=json.dumps(data).encode() if data is not None else None)
     request.add_header("Content-Type", "application/json")
     if token:
@@ -86,6 +86,45 @@ def to_load_area_path(archive: Path, shared_root: str, prefix: str) -> str:
     return f"{prefix.rstrip('/')}/{relative}"
 
 
+# Shown first in EcoTaxa's sorting tools and in the hover popover; everything
+# else the export carries follows alphabetically.
+LEAD_FIELDS = ["esd", "area", "prediction_score", "pressure", "temperature",
+               "major_axis_len", "minor_axis_len", "mean_intensity"]
+POPOVER_FIELDS = ["esd", "area", "prediction_score", "pressure"]
+
+
+def sorting_tools(project: dict) -> tuple[str, str]:
+    """The project's 'sorting tools' and popover lists, from its own mapping.
+
+    An import maps every numeric column the export carries into a numeric
+    free column (n01, n02, ...), which makes it sortable through the API -
+    but the GUI's sort dropdown only offers what the project's
+    classiffieldlist names, and an import leaves that empty. Both lists are
+    newline-separated ``field=label`` (BO/Project.py splits on that), the
+    field being the mapped column name.
+    """
+    mapping = project.get("obj_free_cols") or {}
+    numeric = {name: col for name, col in mapping.items() if str(col).startswith("n")}
+    ordered = [n for n in LEAD_FIELDS if n in numeric] + \
+              sorted(n for n in numeric if n not in LEAD_FIELDS)
+    sort_lines = ["depth_min=depth"] + [f"{numeric[n]}={n}" for n in ordered]
+    pop_lines = [f"{numeric[n]}={n}" for n in POPOVER_FIELDS if n in numeric] + ["depth_min=depth"]
+    return "\n".join(sort_lines), "\n".join(pop_lines)
+
+
+def configure_project(base, token, project_id) -> int:
+    """Make every numeric column the project holds available in the GUI."""
+    project = api(base, f"/projects/{project_id}", None, token)
+    sort_list, pop_list = sorting_tools(project)
+    project["classiffieldlist"] = sort_list
+    project["popoverfieldlist"] = pop_list
+    api(base, f"/projects/{project_id}", project, token, method="PUT")
+    n = sort_list.count("\n") + 1
+    print(f"project {project_id}: {n} fields offered as sorting tools, "
+          f"{pop_list.count(chr(10)) + 1} in the popover")
+    return n
+
+
 def wait_for_job(base, token, job_id, poll=4, timeout=7200):
     """Block until the import job ends. Returns the final job record."""
     deadline = time.time() + timeout
@@ -106,7 +145,8 @@ def wait_for_job(base, token, job_id, poll=4, timeout=7200):
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("archive", help="a .zip, or a directory of them (a split export)")
+    ap.add_argument("archive", nargs="?", default=None,
+                    help="a .zip, or a directory of them (a split export)")
     ap.add_argument("-o", "--output", required=True,
                     help="directory for import.json, which records the project id")
     ap.add_argument("--project-id", type=int, default=None,
@@ -126,8 +166,21 @@ def main() -> int:
     ap.add_argument("--update-mode", default="",
                     help="'Yes' updates data, 'Cla' also updates classification")
     ap.add_argument("--skip-existing-objects", action="store_true")
+    ap.add_argument("--configure-only", action="store_true",
+                    help="only (re)set the sorting tools of --project-id; import nothing")
     args = ap.parse_args()
 
+    if args.configure_only:
+        if args.project_id is None:
+            print("ERROR: --configure-only needs --project-id", file=sys.stderr)
+            return 1
+        user, password = load_credentials(args.credentials, args.user, args.password)
+        token = api(args.url, "/login", {"username": user, "password": password})
+        configure_project(args.url, token, args.project_id)
+        return 0
+
+    if args.archive is None:
+        ap.error("archive is required unless --configure-only")
     source = Path(args.archive)
     if source.is_dir():
         archives = sorted(source.glob("*.zip"))
@@ -194,6 +247,7 @@ def main() -> int:
         total_rows += rows
         print(f"    imported {rows} objects")
 
+    configure_project(args.url, token, project_id)
     project = api(args.url, f"/projects/{project_id}", None, token)
     out_dir = Path(args.output)
     out_dir.mkdir(parents=True, exist_ok=True)
