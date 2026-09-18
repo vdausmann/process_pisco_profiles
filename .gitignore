@@ -8,3 +8,6 @@ venv/
 analyze_profiles.log
 pipeline.log
 folders_ATAIR.txt
+
+# Local credentials. Only the .example is versioned.
+process_pisco_profiles.config.json
