@@ -122,10 +122,51 @@ def configure_project(base, token, project_id) -> int:
     return n
 
 
-def wait_for_job(base, token, job_id, poll=4, timeout=7200):
-    """Block until the import job ends. Returns the final job record."""
+def _slug(name: str) -> str:
+    return "".join(c if c.isalnum() else "." for c in name.strip().lower()).strip(".")
+
+
+def resolve_missing_users(base, token, names: list[str]) -> dict[str, int]:
+    """Map annotator names from an export onto local accounts, creating them.
+
+    An EcoTaxa backup carries who validated each object by *name*. Mapping
+    every unknown name to the administrator would import fine but erase that
+    provenance; a per-name account keeps it. The accounts cannot be logged
+    into (random password nobody is told) -- they exist for attribution.
+    """
+    import secrets
+
+    existing = {u["name"].strip().lower(): u["id"] for u in (api(base, "/users", None, token) or [])}
+    mapping: dict[str, int] = {}
+    for name in names:
+        key = name.strip().lower()
+        if key not in existing:
+            api(base, "/users/create", {
+                "id": -1,
+                "name": name,
+                "email": f"{_slug(name)}@mirror.local",
+                "organisation": "mirrored annotator",
+                "password": secrets.token_urlsafe(24),
+                "usercreationreason": "created to preserve annotation provenance on import",
+            }, token)
+            existing = {u["name"].strip().lower(): u["id"]
+                        for u in (api(base, "/users", None, token) or [])}
+            print(f"    created local account for annotator {name!r} (id {existing[key]})")
+        mapping[name] = existing[key]
+    return mapping
+
+
+def wait_for_job(base, token, job_id, poll=4, timeout=7200, answer_questions=False):
+    """Block until the job ends. Returns the final job record.
+
+    With ``answer_questions``, an import that stops to ask about unknown
+    annotators is answered by creating matching local accounts, and the wait
+    continues. Unknown *taxa* are not guessed at: the job is returned in its
+    asking state for the caller to report.
+    """
     deadline = time.time() + timeout
     last = None
+    answered = set()
     while time.time() < deadline:
         job = api(base, f"/jobs/{job_id}/", None, token)
         state = job.get("state")
@@ -134,10 +175,23 @@ def wait_for_job(base, token, job_id, poll=4, timeout=7200):
             print(f"    job {job_id}: {state} {job.get('progress_pct')}% "
                   f"{job.get('progress_msg') or ''}")
             last = progress
+        if state == "A" and answer_questions:
+            question = job.get("question") or {}
+            missing_users = question.get("missing_users") or []
+            missing_taxa = question.get("missing_taxa") or []
+            key = (tuple(missing_users), tuple(missing_taxa))
+            if missing_taxa or key in answered:
+                return job          # not ours to guess, or we already tried
+            answered.add(key)
+            reply = {"users": resolve_missing_users(base, token, missing_users), "taxa": {}}
+            api(base, f"/jobs/{job_id}/answer", reply, token)
+            print(f"    answered: {len(missing_users)} annotator(s) mapped")
+            time.sleep(poll)
+            continue
         if state in TERMINAL_STATES:
             return job
         time.sleep(poll)
-    raise SystemExit(f"ERROR: import job {job_id} did not finish within {timeout}s")
+    raise SystemExit(f"ERROR: job {job_id} did not finish within {timeout}s")
 
 
 def main() -> int:
@@ -227,7 +281,7 @@ def main() -> int:
         if response.get("errors"):
             print(f"ERROR: import refused: {response['errors']}", file=sys.stderr)
             return 1
-        job = wait_for_job(args.url, token, response["job_id"])
+        job = wait_for_job(args.url, token, response["job_id"], answer_questions=True)
         if job.get("state") != "F":
             # "Asking" means the import wants a question answered, which needs a
             # human; say which rather than leaving a job parked invisibly.
