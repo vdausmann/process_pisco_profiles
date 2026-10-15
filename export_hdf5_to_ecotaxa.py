@@ -278,7 +278,7 @@ def region_features(mask: np.ndarray, crop: np.ndarray) -> dict:
 # Order mirrors a real EcoTaxa export from the old pipeline. img_file_name and
 # object_id are the only columns EcoTaxa strictly requires.
 BASE_COLUMNS = [
-    "img_file_name", "img_rank", "object_id", "object_link",
+    "img_file_name", "img_rank", "object_id", "object_link", "object_frame_index",
     "object_date", "object_time",
     "object_lat", "object_lon",
     "object_pressure", "object_depth_min", "object_depth_max",
@@ -423,7 +423,12 @@ def export(
                 row = {c: "" for c in ALL_COLUMNS}
                 row.update({
                     "img_file_name": rel_img,
-                    "img_rank": rank,
+                    # EcoTaxa's img_rank is an image's rank within its object
+                    # (a smallint, at most 32767); each object has one image.
+                    # The frame's place in the profile used to go here and
+                    # broke imports of profiles over 32767 frames.
+                    "img_rank": 1,
+                    "object_frame_index": rank,
                     "object_id": object_id,
                     "object_date": meta["date"],
                     "object_time": meta["time"],
