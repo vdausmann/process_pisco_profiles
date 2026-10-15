@@ -25,6 +25,7 @@ PROJECT_ID="$(cfg projectId)"
 PROJECT_TITLE="$(cfg projectTitle)"
 INSTRUMENT="$(cfg instrument)"
 VISIBLE="$(cfg visible)"
+ACCESS="$(cfg access)"
 UPDATE_MODE="$(cfg updateMode)"
 SKIP_EXISTING="$(cfg skipExistingObjects)"
 URL="$(cfg url)"
@@ -42,6 +43,7 @@ ARGS=("$ARCHIVE" "-o" "$TARGET")
 [[ -n "$INSTRUMENT" ]] && ARGS+=("--instrument" "$INSTRUMENT")
 [[ -n "$UPDATE_MODE" ]] && ARGS+=("--update-mode" "$UPDATE_MODE")
 [[ -n "$URL" ]] && ARGS+=("--url" "$URL")
+[[ -n "$ACCESS" ]] && ARGS+=("--access" "${ACCESS,,}")
 case "${SKIP_EXISTING,,}" in 1|true|yes|on) ARGS+=("--skip-existing-objects") ;; esac
 # visible defaults to true; only an explicit falsey value turns it off.
 case "${VISIBLE,,}" in 0|false|no|off) ARGS+=("--no-visible") ;; esac

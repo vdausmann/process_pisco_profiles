@@ -342,6 +342,12 @@
                         "default": true,
                         "description": "Whether a newly created project is visible to all users."
                     },
+                    "access": {
+                        "type": "string",
+                        "enum": ["", "public", "open", "private"],
+                        "default": "",
+                        "description": "Who may use the project. 'open' lets every EcoTaxa user annotate, including accounts created later (upstream also lets them change project settings); 'public' lets everyone view; 'private' only those granted. Empty follows 'visible'. Applied to an existing project too when projectId is set."
+                    },
                     "updateMode": {
                         "type": "string",
                         "default": "",
