@@ -346,7 +346,7 @@
                         "type": "string",
                         "enum": ["", "public", "open", "private"],
                         "default": "",
-                        "description": "Who may use the project. 'open' lets every EcoTaxa user annotate, including accounts created later (upstream also lets them change project settings); 'public' lets everyone view; 'private' only those granted. Empty follows 'visible'. Applied to an existing project too when projectId is set."
+                        "description": "Who may use the project. 'public' lets every user view; 'open' also lets them annotate and change settings through the API, but EcoTaxa's GUI ignores it and still shows view-only, so for annotation by everyone grant it with ecotaxa_grant_annotators.py instead; 'private' only those granted. Empty follows 'visible'. Applied to an existing project too when projectId is set."
                     },
                     "updateMode": {
                         "type": "string",
