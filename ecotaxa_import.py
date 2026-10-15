@@ -41,8 +41,8 @@ DEFAULT_SHARED_ROOT = "/mnt/pisco"
 DEFAULT_LOAD_AREA_PREFIX = "/pisco"
 
 # EcoTaxa's project access levels. "open" lets every logged-in user annotate
-# without being granted anything, so accounts made later are covered too; note
-# that upstream also lets them change the project's settings.
+# and manage through the API, but the GUI ignores it and shows the project as
+# view-only; for annotation by everyone use ecotaxa_grant_annotators.py.
 ACCESS_LEVELS = {"private": "0", "public": "1", "open": "2"}
 
 # Job states: Finished, Error, Asking (a question the import needs answered).
@@ -213,8 +213,8 @@ def main() -> int:
                     help="must be one EcoTaxa knows; 'Other camera' is the safe generic")
     ap.add_argument("--visible", action=argparse.BooleanOptionalAction, default=True)
     ap.add_argument("--access", choices=sorted(ACCESS_LEVELS), default=None,
-                    help="'open' lets every user annotate, 'public' lets them "
-                         "view, 'private' only those granted. Default: public, "
+                    help="'public' lets every user view, 'open' also lets "
+                         "them annotate via the API (not the GUI), 'private' only those granted. Default: public, "
                          "or private with --no-visible. Also applied to an "
                          "existing --project-id when given.")
     ap.add_argument("--url", default=os.environ.get("ECOTAXA_URL", "http://127.0.0.1:8088"))
