@@ -61,6 +61,7 @@
                         "default": false,
                         "description": "Treat the pressure in the frame name as gauge pressure. By default it is absolute and 10.1325 dbar is subtracted to give depth."
                     },
+                    "ctdCast": {"type": "integer", "minimum": 1, "description": "Running number of the CTD cast PIScO rode on; written to every object as sample_ctd_cast. Optional."},
                     "linkBase": {
                         "type": "string",
                         "default": "",

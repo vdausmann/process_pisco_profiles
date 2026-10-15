@@ -302,7 +302,10 @@ FEATURE_COLUMNS = [
     "object_extent", "object_local_centroid_col", "object_local_centroid_row",
     "object_solidity",
 ]
-SAMPLE_COLUMNS = ["sample_id", "sample_cruise", "sample_dship_id", "sample_instrument"]
+# sample_ctd_cast: the running number of the CTD cast PIScO rode on, which
+# DSHIP's station name (sample_dship_id) does not carry. Empty when unknown.
+SAMPLE_COLUMNS = ["sample_id", "sample_cruise", "sample_dship_id", "sample_instrument",
+                  "sample_ctd_cast"]
 ALL_COLUMNS = BASE_COLUMNS + FEATURE_COLUMNS + SAMPLE_COLUMNS
 
 # EcoTaxa's type row: [t] text, [f] float. Everything not listed here is text.
@@ -340,6 +343,7 @@ def export(
     predictions: dict | None = None,
     prediction_model: str = "",
     isolate: bool = True,
+    ctd_cast: int | None = None,
 ) -> tuple[Path, Path, int]:
     """Write crops and an EcoTaxa TSV. Returns (crop_dir, tsv_path, n_objects)."""
     profile = profile_name or h5_path.parent.name
@@ -435,6 +439,7 @@ def export(
                     "sample_cruise": meta["cruise"],
                     "sample_dship_id": meta["dship_id"],
                     "sample_instrument": meta["instrument"],
+                    "sample_ctd_cast": ctd_cast,
                 })
 
                 if predictions:
@@ -586,6 +591,8 @@ def main() -> int:
     ap.add_argument("--taxonomy-map", default=None,
                     help="ecotaxa_taxonomy_map.json. Required with --predictions: "
                          "the TSV carries numeric taxon ids, not label names.")
+    ap.add_argument("--ctd-cast", type=int, default=None,
+                    help="running number of the CTD cast, written as sample_ctd_cast")
     ap.add_argument("--link-base", default=None,
                     help="Hub base URL, e.g. http://10.11.11.110:5000. Adds an "
                          "object_link per object that opens the HDF profile "
@@ -641,7 +648,7 @@ def main() -> int:
         link_base=args.link_base, workflow_id=args.workflow_id,
         scale_bar=args.scale_bar, pixel_size_um=args.pixel_size,
         predictions=predictions, prediction_model=prediction_model,
-        isolate=args.isolate_crops)
+        isolate=args.isolate_crops, ctd_cast=args.ctd_cast)
 
     if n == 0:
         print("ERROR: no objects exported", file=sys.stderr)
