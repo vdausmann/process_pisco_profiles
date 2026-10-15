@@ -40,6 +40,11 @@ DEFAULT_CREDENTIALS = "/opt/pisco/etc/ecotaxa.json"
 DEFAULT_SHARED_ROOT = "/mnt/pisco"
 DEFAULT_LOAD_AREA_PREFIX = "/pisco"
 
+# EcoTaxa's project access levels. "open" lets every logged-in user annotate
+# without being granted anything, so accounts made later are covered too; note
+# that upstream also lets them change the project's settings.
+ACCESS_LEVELS = {"private": "0", "public": "1", "open": "2"}
+
 # Job states: Finished, Error, Asking (a question the import needs answered).
 TERMINAL_STATES = {"F", "E", "A"}
 
@@ -207,6 +212,11 @@ def main() -> int:
     ap.add_argument("--instrument", default="Other camera",
                     help="must be one EcoTaxa knows; 'Other camera' is the safe generic")
     ap.add_argument("--visible", action=argparse.BooleanOptionalAction, default=True)
+    ap.add_argument("--access", choices=sorted(ACCESS_LEVELS), default=None,
+                    help="'open' lets every user annotate, 'public' lets them "
+                         "view, 'private' only those granted. Default: public, "
+                         "or private with --no-visible. Also applied to an "
+                         "existing --project-id when given.")
     ap.add_argument("--url", default=os.environ.get("ECOTAXA_URL", "http://127.0.0.1:8088"))
     ap.add_argument("--credentials", default=os.environ.get(
         "ECOTAXA_CREDENTIALS", DEFAULT_CREDENTIALS))
@@ -257,15 +267,21 @@ def main() -> int:
     created = False
     if project_id is None:
         title = args.project_title or archives[0].stem
+        access = args.access or ("public" if args.visible else "private")
         project_id = api(args.url, "/projects/create", {
-            "title": title, "instrument": args.instrument, "visible": args.visible,
+            "title": title, "instrument": args.instrument,
+            "visible": access != "private", "access": ACCESS_LEVELS[access],
         }, token)
         created = True
-        print(f"created project {project_id}: {title!r}")
+        print(f"created project {project_id}: {title!r} ({access})")
     else:
         project = api(args.url, f"/projects/{project_id}", None, token)
         print(f"importing into existing project {project_id}: "
               f"{project.get('title')!r} ({project.get('objcount') or 0} objects)")
+        if args.access and project.get("access") != ACCESS_LEVELS[args.access]:
+            project["access"] = ACCESS_LEVELS[args.access]
+            api(args.url, f"/projects/{project_id}", project, token, method="PUT")
+            print(f"  access set to {args.access}")
 
     total_rows = 0
     for archive in archives:
