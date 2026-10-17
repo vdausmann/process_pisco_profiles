@@ -35,6 +35,16 @@ import numpy as np
 
 TARGET_DIMS = 50
 
+# Rows reduced and written at a time. A deep profile has ~700k objects, whose
+# 768-dim embeddings are 2 GB as float32; a float64 copy of the whole matrix
+# on top of that exhausted the 8 GB EcoTaxa machine and took sshd down with it.
+CHUNK = 50_000
+
+# fit_pca fits on at most this many rows; an SVD over every object of a deep
+# profile would need several times the matrix in memory, and a basis needs far
+# fewer samples than that to settle.
+FIT_SAMPLE = 100_000
+
 
 def fit_pca(matrix: np.ndarray, dims: int = TARGET_DIMS) -> dict:
     """Fit a PCA basis by SVD. Returns {mean, components}.
@@ -42,6 +52,10 @@ def fit_pca(matrix: np.ndarray, dims: int = TARGET_DIMS) -> dict:
     numpy rather than sklearn: this needs to run in EcoTaxa's own virtualenv,
     which has numpy but no sklearn, and the maths is four lines.
     """
+    if matrix.shape[0] > FIT_SAMPLE:
+        rows = np.random.default_rng(0).choice(matrix.shape[0], FIT_SAMPLE, replace=False)
+        matrix = matrix[np.sort(rows)]
+    matrix = matrix.astype(np.float64)
     mean = matrix.mean(axis=0)
     centred = matrix - mean
     _u, _s, vt = np.linalg.svd(centred, full_matrices=False)
@@ -49,7 +63,12 @@ def fit_pca(matrix: np.ndarray, dims: int = TARGET_DIMS) -> dict:
 
 
 def apply_pca(matrix: np.ndarray, basis: dict) -> np.ndarray:
-    return (matrix - basis["mean"]) @ basis["components"].T
+    """Reduce row by row in chunks, so only one chunk is ever float64."""
+    reduced = np.empty((matrix.shape[0], basis["components"].shape[0]), np.float32)
+    for start in range(0, matrix.shape[0], CHUNK):
+        part = matrix[start:start + CHUNK].astype(np.float64)
+        reduced[start:start + CHUNK] = (part - basis["mean"]) @ basis["components"].T
+    return reduced
 
 
 def main() -> int:
@@ -93,7 +112,7 @@ def main() -> int:
 
     payload = np.load(args.embeddings, allow_pickle=False)
     object_ids = [str(v) for v in payload["object_ids"]]
-    matrix = payload["embeddings"].astype(np.float64)
+    matrix = payload["embeddings"]
     print(f"embeddings: {matrix.shape[0]} objects x {matrix.shape[1]} dims")
 
     with psycopg.connect(args.dsn) as conn:
@@ -155,17 +174,20 @@ def main() -> int:
         print("dry run, nothing written")
         return 0
 
-    rows = [(objid, "[" + ",".join(f"{v:.6f}" for v in reduced[i]) + "]")
-            for objid, i in matched]
+    del matrix
     with psycopg.connect(args.dsn) as conn:
         with conn.cursor() as cur:
-            cur.executemany("""
-                INSERT INTO obj_cnn_features_vector (objcnnid, features)
-                VALUES (%s, %s::vector)
-                ON CONFLICT (objcnnid) DO UPDATE SET features = EXCLUDED.features
-            """, rows)
+            for start in range(0, len(matched), CHUNK):
+                rows = [(objid, "[" + ",".join(f"{v:.6f}" for v in reduced[i]) + "]")
+                        for objid, i in matched[start:start + CHUNK]]
+                cur.executemany("""
+                    INSERT INTO obj_cnn_features_vector (objcnnid, features)
+                    VALUES (%s, %s::vector)
+                    ON CONFLICT (objcnnid) DO UPDATE SET features = EXCLUDED.features
+                """, rows)
+                print(f"  {start + len(rows)} / {len(matched)}", flush=True)
         conn.commit()
-    print(f"wrote {len(rows)} feature vectors")
+    print(f"wrote {len(matched)} feature vectors")
 
     with psycopg.connect(args.dsn) as conn:
         with conn.cursor() as cur:
