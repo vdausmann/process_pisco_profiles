@@ -68,4 +68,4 @@ echo "Embeddings:  $EMBEDDINGS"
 echo "Project:     ${PROJECT_ID:-from $PROJECT_ID_FROM}"
 echo ""
 
-exec "$PYTHON" "$SCRIPT_DIR/ecotaxa_write_features.py" "${ARGS[@]}"
+exec "$PYTHON" -u "$SCRIPT_DIR/ecotaxa_write_features.py" "${ARGS[@]}"
