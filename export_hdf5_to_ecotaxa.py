@@ -56,7 +56,9 @@ from __future__ import annotations
 
 import argparse
 import csv
+import io
 import json
+import multiprocessing
 import os
 import re
 import sys
@@ -329,6 +331,213 @@ def _fmt(value) -> str:
 
 # --- export -----------------------------------------------------------------
 
+# --- per-frame work, spread over a pool of processes ------------------------
+#
+# Measuring a crop and drawing its PNG cost a few milliseconds each, and a deep
+# profile has several hundred thousand crops: on one core that was half an
+# hour. Each frame is independent, so worker processes take frames and send
+# back the finished TSV lines and PNG bytes; the parent writes them in order.
+# The PNGs go straight into the archive - writing each as a file onto the
+# shared storage and reading it back for the zip was a third of the time.
+
+_JOB: dict = {}     # set in the parent before the pool forks
+
+
+def _frame_objects(task):
+    """One frame's objects as (tsv line, image name, png bytes), plus counts."""
+    rank, frame = task
+    o = _JOB
+    if "file" not in o:
+        o["file"] = h5py.File(o["h5_path"], "r")
+    group = o["file"][frame]
+    min_size, absolute_pressure = o["min_size"], o["absolute_pressure"]
+    image_ext, link_base, workflow_id = o["image_ext"], o["link_base"], o["workflow_id"]
+    scale_bar, pixel_size_um = o["scale_bar"], o["pixel_size_um"]
+    predictions, prediction_model = o["predictions"], o["prediction_model"]
+    isolate, ctd_cast, profile = o["isolate"], o["ctd_cast"], o["profile"]
+
+    counts = {"skipped": 0, "links": 0, "links_too_long": 0, "predicted": 0}
+    out = []
+    meta = parse_frame_name(frame)
+    bb_x = np.asarray(group["boundingBoxX"])
+    bb_y = np.asarray(group["boundingBoxY"])
+    bb_w = np.asarray(group["boundingBoxW"])
+    bb_h = np.asarray(group["boundingBoxH"])
+    offsets = np.asarray(group["offsets"])
+    crops = np.asarray(group["cropPixelData"])
+    masks = np.asarray(group["maskPixelData"]) if "maskPixelData" in group else None
+
+    for i in range(len(offsets)):
+        w, h = int(bb_w[i]), int(bb_h[i])
+        if w <= 0 or h <= 0:
+            counts["skipped"] += 1
+            continue
+        if min_size and w <= min_size and h <= min_size:
+            counts["skipped"] += 1
+            continue
+
+        off = int(offsets[i])
+        n_px = w * h
+        if off + n_px > crops.size:
+            counts["skipped"] += 1
+            continue
+
+        # The segmenter stores objects bright on a dark ground, the way
+        # the sensor sees them. EcoTaxa — and the old Python pipeline's
+        # saved crops — want them dark on light. Invert before both the
+        # PNG and the features, because the old route measures its
+        # intensity morphometrics on the dark-on-light image; skipping
+        # this would flip min/max/mean_intensity, int_density and range
+        # relative to exports from the other route.
+        crop = (255 - crops[off:off + n_px].reshape(h, w)).astype(np.uint8)
+        mask = masks[off:off + n_px].reshape(h, w) if masks is not None else None
+        x, y = int(bb_x[i]), int(bb_y[i])
+        if isolate and mask is not None:
+            # The stored box carries 30 px of frame for the deconvolution
+            # model; the crop EcoTaxa and the classifier see is the
+            # object alone in a tight box, as the python route saved it.
+            crop, mask, dx, dy = tight_masked(crop, mask)
+            x, y, h, w = x + dx, y + dy, crop.shape[0], crop.shape[1]
+        object_id = f"{frame}_{i + 1}"
+        rel_img = f"{object_id}.{image_ext}"
+        buf = io.BytesIO()
+        if scale_bar:
+            # Records the original size in a PNG text chunk, so
+            # strip_scale_bar() can undo the strip and any right
+            # padding exactly before the crop reaches a classifier.
+            save_crop_with_scale_bar(Image.fromarray(crop), buf,
+                                     pixel_resolution=pixel_size_um)
+        else:
+            Image.fromarray(crop).save(buf, format="PNG")
+
+        row = {c: "" for c in ALL_COLUMNS}
+        row.update({
+            "img_file_name": rel_img,
+            # EcoTaxa's img_rank is an image's rank within its object
+            # (a smallint, at most 32767); each object has one image.
+            # The frame's place in the profile used to go here and
+            # broke imports of profiles over 32767 frames.
+            "img_rank": 1,
+            "object_frame_index": rank,
+            "object_id": object_id,
+            "object_date": meta["date"],
+            "object_time": meta["time"],
+            "object_lat": meta["lat"],
+            "object_lon": meta["lon"],
+            "object_pressure": meta["pressure"],
+            "object_temperature": meta["temperature"],
+            "object_x": x,
+            "object_y": y,
+            "object_width": w,
+            "object_height": h,
+            "sample_id": profile,
+            "sample_cruise": meta["cruise"],
+            "sample_dship_id": meta["dship_id"],
+            "sample_instrument": meta["instrument"],
+            "sample_ctd_cast": ctd_cast,
+        })
+
+        if predictions:
+            predicted = predictions.get(object_id)
+            if predicted:
+                taxon_id, display_name, score = predicted
+                # The id is what EcoTaxa validates; the name rides
+                # along so the TSV is readable by a human.
+                row["object_annotation_category_id"] = taxon_id
+                row["object_annotation_category"] = display_name
+                row["object_annotation_status"] = "predicted"
+                row["object_prediction_score"] = score
+                row["object_prediction_model"] = prediction_model
+                counts["predicted"] += 1
+
+        if link_base and workflow_id:
+            # Points at the Hub, which resolves the workflow to its
+            # result.h5 and opens the viewer on this object. The
+            # object number matches the one in object_id, counting
+            # from 1.
+            link = f"{link_base}/v/{workflow_id}/{frame}/{i + 1}"
+            if len(link) <= OBJECT_LINK_MAX:
+                row["object_link"] = link
+                counts["links"] += 1
+            else:
+                counts["links_too_long"] += 1
+
+        if meta["pressure"] is not None:
+            depth = meta["pressure"] - (ATM_DBAR if absolute_pressure else 0.0)
+            row["object_depth_min"] = round(depth, 3)
+            row["object_depth_max"] = round(depth, 3)
+
+        if mask is not None:
+            feats = region_features(mask, crop)
+            row.update(feats)
+            if "object_area_exc" in feats:
+                row["object_area"] = feats["object_area_exc"]
+                row["object_esd"] = round(
+                    float(area_to_esd(feats["object_area_exc"])), 2)
+
+
+        out.append(("\t".join(_fmt(row.get(c, "")) for c in ALL_COLUMNS),
+                    rel_img, buf.getvalue()))
+    return out, counts
+
+
+class _Archives:
+    """EcoTaxa import archives, filled one object at a time.
+
+    EcoTaxa wants the TSV and the images it references in the same archive,
+    so each part gets its own TSV of only its rows; a part is closed when the
+    next image would take it over the size limit. PNGs are stored, not
+    deflated again - they are compressed already.
+    """
+
+    def __init__(self, out_dir: Path, profile: str, max_zip_size_mb: int):
+        self.out_dir, self.profile = out_dir, profile
+        self.max_bytes = max_zip_size_mb * 1024 * 1024
+        self.tsv_name = f"ecotaxa_{profile}.tsv"
+        self.parts: list[tuple[Path, int]] = []
+        self.zip = None
+
+    def _open(self):
+        n = len(self.parts) + 1
+        self.path = self.out_dir / f"{self.profile}_part{n}_ecotaxa.zip"
+        self.zip = zipfile.ZipFile(self.path, "w", zipfile.ZIP_STORED)
+        self.tsv_tmp = self.out_dir / f".{self.path.name}.tsv"
+        self.tsv = open(self.tsv_tmp, "w", encoding="utf-8")
+        self.tsv.write(self.header)
+        self.size, self.rows = 0, 0
+
+    def _close(self):
+        self.tsv.close()
+        self.zip.write(self.tsv_tmp, self.tsv_name, compress_type=zipfile.ZIP_DEFLATED)
+        self.tsv_tmp.unlink()
+        self.zip.close()
+        self.parts.append((self.path, self.rows))
+        self.zip = None
+
+    def add(self, line: str, name: str, data: bytes):
+        if self.zip is not None and self.rows and self.size + len(data) > self.max_bytes:
+            self._close()
+        if self.zip is None:
+            self._open()
+        self.zip.writestr(name, data)
+        self.tsv.write(line + "\n")
+        self.size += len(data)
+        self.rows += 1
+
+    def finish(self) -> list[Path]:
+        if self.zip is not None:
+            self._close()
+        written = []
+        for path, rows in self.parts:
+            if len(self.parts) == 1:
+                final = self.out_dir / f"{self.profile}_ecotaxa.zip"
+                path.replace(final)
+                path = final
+            written.append(path)
+            print(f"  {path.name}  {rows} objects  {path.stat().st_size / 1e6:.1f} MB")
+        return written
+
+
 def export(
     h5_path: Path,
     out_dir: Path,
@@ -344,222 +553,81 @@ def export(
     prediction_model: str = "",
     isolate: bool = True,
     ctd_cast: int | None = None,
-) -> tuple[Path, Path, int]:
-    """Write crops and an EcoTaxa TSV. Returns (crop_dir, tsv_path, n_objects)."""
+    archive: bool = True,
+    max_zip_size_mb: int = 500,
+    workers: int | None = None,
+) -> tuple[Path, int]:
+    """Write the EcoTaxa TSV and the import archives (or, without `archive`,
+    the crops as files). Returns (tsv_path, n_objects)."""
     profile = profile_name or h5_path.parent.name
-    crop_dir = out_dir / "crops"
-    crop_dir.mkdir(parents=True, exist_ok=True)
-
-    rows: list[dict] = []
-    n_frames = 0
-    n_skipped = 0
-    n_links = 0
-    n_links_too_long = 0
-    n_predicted = 0
-
     if link_base and not workflow_id:
         workflow_id = workflow_id_from_path(h5_path)
     link_base = link_base.rstrip("/") if link_base else None
 
     with h5py.File(h5_path, "r") as f:
-        for rank, frame in enumerate(sorted(f.keys()), start=1):
-            group = f[frame]
-            if not isinstance(group, h5py.Group) or "boundingBoxW" not in group:
-                continue
-            n_frames += 1
-            meta = parse_frame_name(frame)
+        # The rank counts every key, as it always has: it is the frame's
+        # place in the profile, written as object_frame_index.
+        frames = [(rank, name) for rank, name in enumerate(sorted(f.keys()), start=1)
+                  if isinstance(f[name], h5py.Group) and "boundingBoxW" in f[name]]
 
-            bb_x = np.asarray(group["boundingBoxX"])
-            bb_y = np.asarray(group["boundingBoxY"])
-            bb_w = np.asarray(group["boundingBoxW"])
-            bb_h = np.asarray(group["boundingBoxH"])
-            offsets = np.asarray(group["offsets"])
-            crops = np.asarray(group["cropPixelData"])
-            masks = np.asarray(group["maskPixelData"]) if "maskPixelData" in group else None
+    _JOB.clear()
+    _JOB.update(h5_path=str(h5_path), min_size=min_size,
+                absolute_pressure=absolute_pressure, image_ext=image_ext,
+                link_base=link_base, workflow_id=workflow_id, scale_bar=scale_bar,
+                pixel_size_um=pixel_size_um, predictions=predictions,
+                prediction_model=prediction_model, isolate=isolate,
+                ctd_cast=ctd_cast, profile=profile)
 
-            for i in range(len(offsets)):
-                w, h = int(bb_w[i]), int(bb_h[i])
-                if w <= 0 or h <= 0:
-                    n_skipped += 1
-                    continue
-                if min_size and w <= min_size and h <= min_size:
-                    n_skipped += 1
-                    continue
-
-                off = int(offsets[i])
-                n_px = w * h
-                if off + n_px > crops.size:
-                    n_skipped += 1
-                    continue
-
-                # The segmenter stores objects bright on a dark ground, the way
-                # the sensor sees them. EcoTaxa — and the old Python pipeline's
-                # saved crops — want them dark on light. Invert before both the
-                # PNG and the features, because the old route measures its
-                # intensity morphometrics on the dark-on-light image; skipping
-                # this would flip min/max/mean_intensity, int_density and range
-                # relative to exports from the other route.
-                crop = (255 - crops[off:off + n_px].reshape(h, w)).astype(np.uint8)
-                mask = masks[off:off + n_px].reshape(h, w) if masks is not None else None
-                x, y = int(bb_x[i]), int(bb_y[i])
-                if isolate and mask is not None:
-                    # The stored box carries 30 px of frame for the deconvolution
-                    # model; the crop EcoTaxa and the classifier see is the
-                    # object alone in a tight box, as the python route saved it.
-                    crop, mask, dx, dy = tight_masked(crop, mask)
-                    x, y, h, w = x + dx, y + dy, crop.shape[0], crop.shape[1]
-                object_id = f"{frame}_{i + 1}"
-                rel_img = f"{object_id}.{image_ext}"
-                if scale_bar:
-                    # Records the original size in a PNG text chunk, so
-                    # strip_scale_bar() can undo the strip and any right
-                    # padding exactly before the crop reaches a classifier.
-                    save_crop_with_scale_bar(Image.fromarray(crop),
-                                             crop_dir / rel_img,
-                                             pixel_resolution=pixel_size_um)
-                else:
-                    Image.fromarray(crop).save(crop_dir / rel_img)
-
-                row = {c: "" for c in ALL_COLUMNS}
-                row.update({
-                    "img_file_name": rel_img,
-                    # EcoTaxa's img_rank is an image's rank within its object
-                    # (a smallint, at most 32767); each object has one image.
-                    # The frame's place in the profile used to go here and
-                    # broke imports of profiles over 32767 frames.
-                    "img_rank": 1,
-                    "object_frame_index": rank,
-                    "object_id": object_id,
-                    "object_date": meta["date"],
-                    "object_time": meta["time"],
-                    "object_lat": meta["lat"],
-                    "object_lon": meta["lon"],
-                    "object_pressure": meta["pressure"],
-                    "object_temperature": meta["temperature"],
-                    "object_x": x,
-                    "object_y": y,
-                    "object_width": w,
-                    "object_height": h,
-                    "sample_id": profile,
-                    "sample_cruise": meta["cruise"],
-                    "sample_dship_id": meta["dship_id"],
-                    "sample_instrument": meta["instrument"],
-                    "sample_ctd_cast": ctd_cast,
-                })
-
-                if predictions:
-                    predicted = predictions.get(object_id)
-                    if predicted:
-                        taxon_id, display_name, score = predicted
-                        # The id is what EcoTaxa validates; the name rides
-                        # along so the TSV is readable by a human.
-                        row["object_annotation_category_id"] = taxon_id
-                        row["object_annotation_category"] = display_name
-                        row["object_annotation_status"] = "predicted"
-                        row["object_prediction_score"] = score
-                        row["object_prediction_model"] = prediction_model
-                        n_predicted += 1
-
-                if link_base and workflow_id:
-                    # Points at the Hub, which resolves the workflow to its
-                    # result.h5 and opens the viewer on this object. The
-                    # object number matches the one in object_id, counting
-                    # from 1.
-                    link = f"{link_base}/v/{workflow_id}/{frame}/{i + 1}"
-                    if len(link) <= OBJECT_LINK_MAX:
-                        row["object_link"] = link
-                        n_links += 1
-                    else:
-                        n_links_too_long += 1
-
-                if meta["pressure"] is not None:
-                    depth = meta["pressure"] - (ATM_DBAR if absolute_pressure else 0.0)
-                    row["object_depth_min"] = round(depth, 3)
-                    row["object_depth_max"] = round(depth, 3)
-
-                if mask is not None:
-                    feats = region_features(mask, crop)
-                    row.update(feats)
-                    if "object_area_exc" in feats:
-                        row["object_area"] = feats["object_area_exc"]
-                        row["object_esd"] = round(
-                            float(area_to_esd(feats["object_area_exc"])), 2)
-
-                rows.append(row)
-
+    header = "\t".join(ALL_COLUMNS) + "\n" + "\t".join(
+        "[t]" if c in TEXT_COLUMNS else "[f]" for c in ALL_COLUMNS) + "\n"
     tsv_path = out_dir / f"ecotaxa_{profile}.tsv"
-    with open(tsv_path, "w", newline="", encoding="utf-8") as fh:
-        writer = csv.writer(fh, delimiter="\t", lineterminator="\n")
-        writer.writerow(ALL_COLUMNS)
-        writer.writerow(["[t]" if c in TEXT_COLUMNS else "[f]" for c in ALL_COLUMNS])
-        for row in rows:
-            writer.writerow([_fmt(row.get(c, "")) for c in ALL_COLUMNS])
+    archives = _Archives(out_dir, profile, max_zip_size_mb) if archive else None
+    if archives:
+        archives.header = header
+    crop_dir = out_dir / "crops"
+    if not archive:
+        crop_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"  frames: {n_frames}  objects: {len(rows)}  skipped: {n_skipped}")
+    totals = {"skipped": 0, "links": 0, "links_too_long": 0, "predicted": 0}
+    n_objects = 0
+    workers = workers or min(8, os.cpu_count() or 1)
+    # fork: the workers inherit the predictions without pickling them.
+    with multiprocessing.get_context("fork").Pool(workers) as pool, \
+            open(tsv_path, "w", encoding="utf-8") as tsv:
+        tsv.write(header)
+        for objects, counts in pool.imap(_frame_objects, frames, chunksize=8):
+            for key in totals:
+                totals[key] += counts[key]
+            for line, name, data in objects:
+                tsv.write(line + "\n")
+                if archives:
+                    archives.add(line, name, data)
+                else:
+                    (crop_dir / name).write_bytes(data)
+                n_objects += 1
+    if archives:
+        if n_objects:
+            archives.finish()
+        elif archives.zip is not None:
+            archives.zip.close()
+
+    print(f"  frames: {len(frames)}  objects: {n_objects}  skipped: {totals['skipped']}"
+          f"  ({workers} workers)")
     if predictions is not None:
-        print(f"  predictions: {n_predicted} of {len(rows)} objects annotated"
+        print(f"  predictions: {totals['predicted']} of {n_objects} objects annotated"
               + (f" ({prediction_model})" if prediction_model else ""))
     if scale_bar:
         print(f"  scale bar: reversible, at {pixel_size_um} um/px "
               f"({SCALE_BAR_STRIP_H} px strip below each crop)")
     if link_base:
         if workflow_id:
-            print(f"  object_link: {n_links} written"
-                  + (f", {n_links_too_long} over {OBJECT_LINK_MAX} chars and dropped"
-                     if n_links_too_long else ""))
+            print(f"  object_link: {totals['links']} written"
+                  + (f", {totals['links_too_long']} over {OBJECT_LINK_MAX} chars and dropped"
+                     if totals["links_too_long"] else ""))
         else:
             print("  object_link: skipped - no workflow id in the path, "
                   "pass --workflow-id to link anyway")
-    return crop_dir, tsv_path, len(rows)
-
-
-def make_zips(crop_dir: Path, tsv_path: Path, out_dir: Path, profile: str,
-              max_zip_size_mb: int = 500) -> list[Path]:
-    """Package crops + TSV into one or more EcoTaxa import archives.
-
-    EcoTaxa wants the TSV and the images it references in the same archive, so
-    a split archive gets its own TSV holding only that part's rows.
-    """
-    with open(tsv_path, newline="", encoding="utf-8") as fh:
-        reader = csv.reader(fh, delimiter="\t")
-        header = next(reader)
-        type_row = next(reader)
-        data_rows = list(reader)
-
-    name_idx = header.index("img_file_name")
-    max_bytes = max_zip_size_mb * 1024 * 1024
-
-    groups: list[list[list[str]]] = []
-    current: list[list[str]] = []
-    current_size = 0
-    for row in data_rows:
-        img = crop_dir / row[name_idx]
-        size = img.stat().st_size if img.exists() else 0
-        if current and current_size + size > max_bytes:
-            groups.append(current)
-            current, current_size = [], 0
-        current.append(row)
-        current_size += size
-    if current:
-        groups.append(current)
-
-    written = []
-    for n, group in enumerate(groups, start=1):
-        suffix = "" if len(groups) == 1 else f"_part{n}"
-        zip_path = out_dir / f"{profile}{suffix}_ecotaxa.zip"
-        tsv_name = f"ecotaxa_{profile}.tsv"
-        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            buf = ["\t".join(header), "\t".join(type_row)]
-            buf += ["\t".join(r) for r in group]
-            zf.writestr(tsv_name, "\n".join(buf) + "\n")
-            for row in group:
-                img = crop_dir / row[name_idx]
-                if img.exists():
-                    zf.write(img, row[name_idx])
-        written.append(zip_path)
-        print(f"  {zip_path.name}  {len(group)} objects  "
-              f"{zip_path.stat().st_size / 1e6:.1f} MB")
-    return written
+    return tsv_path, n_objects
 
 
 def main() -> int:
@@ -611,7 +679,9 @@ def main() -> int:
                          "classifier was trained on. --no-isolate-crops writes the stored "
                          "box as-is, neighbours and the segmenter's padding included.")
     ap.add_argument("--no-zip", action="store_true",
-                    help="write crops and TSV but skip archiving")
+                    help="write the crops as files under crops/ and the TSV, no archive")
+    ap.add_argument("--workers", type=int, default=None,
+                    help="processes measuring and drawing crops (default: up to 8)")
     args = ap.parse_args()
 
     src = Path(args.input)
@@ -647,20 +717,19 @@ def main() -> int:
                  if (n_gate or n_unmapped) else ""))
 
     print(f"Exporting {src}")
-    crop_dir, tsv_path, n = export(
+    tsv_path, n = export(
         src, out_dir, profile_name=profile, min_size=args.min_size,
         absolute_pressure=not args.gauge_pressure,
         link_base=args.link_base, workflow_id=args.workflow_id,
         scale_bar=args.scale_bar, pixel_size_um=args.pixel_size,
         predictions=predictions, prediction_model=prediction_model,
-        isolate=args.isolate_crops, ctd_cast=args.ctd_cast)
+        isolate=args.isolate_crops, ctd_cast=args.ctd_cast,
+        archive=not args.no_zip, max_zip_size_mb=args.max_zip_size,
+        workers=args.workers)
 
     if n == 0:
         print("ERROR: no objects exported", file=sys.stderr)
         return 1
-
-    if not args.no_zip:
-        make_zips(crop_dir, tsv_path, out_dir, profile, args.max_zip_size)
 
     print(f"Done: {n} objects -> {out_dir}")
     return 0
