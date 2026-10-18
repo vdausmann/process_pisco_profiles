@@ -61,15 +61,20 @@ def preprocess(crop: np.ndarray) -> torch.Tensor:
 
     Mirrors utils.custom_image_processor: RGB, longest edge to 224, centre-pad
     with white, scale to [0,1] then normalise with mean=std=0.5 to land in
-    [-1, 1]. Returns None for a crop that cannot be resized.
+    [-1, 1]. Returns None only for an empty crop.
+
+    The short edge is kept at least one pixel: a streak more than 224 times
+    longer than wide (5 x 1298 on MSM147_002-11) would otherwise shrink to
+    nothing and drop out, and EcoTaxa refuses similarity search for a whole
+    project when a single object has no feature vector.
     """
+    if crop.size == 0:
+        return None
     image = Image.fromarray(crop).convert("RGB")
 
     width, height = image.size
     scale = TARGET_SIZE / max(width, height)
-    new_w, new_h = int(width * scale), int(height * scale)
-    if new_w < 1 or new_h < 1:
-        return None
+    new_w, new_h = max(1, int(width * scale)), max(1, int(height * scale))
     resized = TF.resize(image, (new_h, new_w))
 
     pad_left = (TARGET_SIZE - new_w) // 2
