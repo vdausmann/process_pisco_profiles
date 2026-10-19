@@ -76,7 +76,7 @@
                         "type": "number",
                         "minimum": 0.001,
                         "default": 22.5,
-                        "description": "Micrometres per pixel, for the scale bar. Default 22.5 matches the value area_to_esd uses, so the bar and object_esd agree. Note utils/scale_bar default to 23, a 2.2% difference."
+                        "description": "Micrometres per pixel, for the scale bar and object_esd alike. 22.5 is PISCO2; set the camera's own value for any other."
                     },
                     "predictionsPath": {
                         "type": "string",

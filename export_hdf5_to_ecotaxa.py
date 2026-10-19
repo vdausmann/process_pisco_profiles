@@ -90,9 +90,9 @@ ECOTAXA_TAXON_MAP = {
 ATM_DBAR = 10.1325
 
 
-def area_to_esd(area_px: float) -> float:
+def area_to_esd(area_px: float, pixel_size_um: float = PIXEL_SIZE_UM) -> float:
     """Equivalent spherical diameter in µm from an area in pixels."""
-    return 2.0 * np.sqrt(area_px * PIXEL_SIZE_UM**2 / np.pi)
+    return 2.0 * np.sqrt(area_px * pixel_size_um**2 / np.pi)
 
 
 # --- frame name parsing -----------------------------------------------------
@@ -473,7 +473,7 @@ def _frame_objects(task):
             if "object_area_exc" in feats:
                 row["object_area"] = feats["object_area_exc"]
                 row["object_esd"] = round(
-                    float(area_to_esd(feats["object_area_exc"])), 2)
+                    float(area_to_esd(feats["object_area_exc"], pixel_size_um)), 2)
 
 
         out.append(("\t".join(_fmt(row.get(c, "")) for c in ALL_COLUMNS),
@@ -651,9 +651,8 @@ def main() -> int:
                          "Reversible: strip_scale_bar() in scale_bar.py "
                          "restores the original crop exactly.")
     ap.add_argument("--pixel-size", type=float, default=PIXEL_SIZE_UM,
-                    help=f"Micrometres per pixel for the scale bar "
-                         f"(default: {PIXEL_SIZE_UM}, the value area_to_esd "
-                         f"uses, so the bar and object_esd agree).")
+                    help=f"Micrometres per pixel, for the scale bar and object_esd "
+                         f"alike (default: {PIXEL_SIZE_UM}, PISCO2's).")
     ap.add_argument("--predictions", default=None,
                     help="predictions.csv from vit_classify_hdf5.py, or that "
                          "stage's output directory. Annotations ride the import "
