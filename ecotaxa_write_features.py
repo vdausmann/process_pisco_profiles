@@ -186,6 +186,13 @@ def main() -> int:
                     ON CONFLICT (objcnnid) DO UPDATE SET features = EXCLUDED.features
                 """, rows)
                 print(f"  {start + len(rows)} / {len(matched)}", flush=True)
+            # EcoTaxa deletes a project's vectors whenever cnn_network_id
+            # changes, and its settings form saves NULL as ''. A project
+            # left at NULL so lost every vector the first time anyone
+            # saved its settings (MSM147_003-01). '' is what the form
+            # writes, so a later save changes nothing.
+            cur.execute("UPDATE projects SET cnn_network_id = '' "
+                        "WHERE projid = %s AND cnn_network_id IS NULL", (project_id,))
         conn.commit()
     print(f"wrote {len(matched)} feature vectors")
 
