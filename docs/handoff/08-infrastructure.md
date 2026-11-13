@@ -2,7 +2,10 @@
 
 ## Commits made this session
 
-**`process_pisco_profiles`** (GitLab + GitHub, both in sync at `7492061`)
+**`process_pisco_profiles`** — rebased onto GitLab `main` on 2026-11-13 and
+pushed to both remotes. GitLab had **31 commits** of Hub/HDF5 work on top of
+`7492061` that the local checkout had not seen (topic 09); this session's
+commits now sit on top of those.
 | Commit | Change |
 |---|---|
 | `bf6f5f3` | M181 sample_id = cruise + CTD cast |
@@ -13,7 +16,8 @@
 | `98e8b5e` | `--dualvit-model` shorthand |
 | `7f8dcf2` | `--dualvit-model` falls back to Hugging Face |
 | `cc30f6e` | `training/` — dual-ViT recipe |
-| `7492061` | reversible scale bar |
+| `7492061` | reversible scale bar (since lifted into `scale_bar.py` upstream) |
+| `75db55a` | this handoff documentation |
 
 **`pisco_segmenter`** (= `pisco_segmenter_py`, branch `main`)
 | Commit | Change |
@@ -41,12 +45,12 @@ Fixed and verified with a pool where every third task raises the same error.
 The trigger was a transient NFS read, not bad data.
 
 ## Reproducibility status
-| Artifact | Where |
-|---|---|
-| Pipeline + training recipe | GitLab + GitHub |
-| Segmenter | GitLab + GitHub |
-| 18 deconvolution models | GitLab + GitHub |
-| 4 dual-ViT models | Hugging Face, **public** |
+| Artifact | Where | State 2026-11-13 |
+|---|---|---|
+| Pipeline + training recipe | GitLab + GitHub | in sync |
+| Segmenter | GitLab + GitHub | **local and GitHub 9 behind GitLab** |
+| 18 deconvolution models | GitLab + GitHub | GitLab `99c2933`, GitHub `7091a78` — **GitHub behind** |
+| 4 dual-ViT models | Hugging Face, **public** | published |
 
 `Veit/M181_{binary,multiclass}` (231204 + non-isolated, pipeline default) and
 `Veit/ATAIIR2604_NorthSea_{binary,multiclass}` (v5a + isolated). Cards record
@@ -54,14 +58,18 @@ the coupling, the pluteus->Rhizaria confusion and the deprecated-taxon remap.
 
 ## OPEN ISSUES
 
-### 1. Credentials — RESOLVED (committed)
+### 1. Credentials — RESOLVED
 `process_pisco_profiles.config.example.json` carries the EcoTaxa and FTP
 credentials. Veit confirms these are **public credentials published by
-EcoTaxa**, so it is committed as of 2026-11-13. Kept here as a note only so
-nobody "fixes" it again assuming they are secret.
+EcoTaxa**, so it stays committed. Upstream `b5030e8` additionally added the
+**local** `process_pisco_profiles.config.json` to `.gitignore`, which is the
+right split: example versioned, local ignored. Kept here as a note only so
+nobody "fixes" the example again assuming it is secret.
 
 ### 2. Local `pisco_segmenter` is behind GitLab — see topic 09
-GitLab `main` is at `8eff671`, **9 commits ahead** of local `b805b9a`. This is
+**Still open.** (The sibling problem on `process_pisco_profiles` is now
+resolved — see above.) GitLab `main` is at `8eff671`, **9 commits ahead** of
+local `b805b9a`. This is
 not just packaging: **background estimation changed** and there is no legacy
 switch, so pulling changes the output of every future run.
 **[Topic 09](09-hub-integration.md) has the analysis.** GitHub `main` is also
@@ -79,7 +87,12 @@ profile in ~0.2 min. Workaround: put `--image-ext` in the passthrough too.
 A real run of 3 ATAIR profiles is ~15-20 min, not seconds — use that as a
 sanity check.
 
+### 5. Two GitHub mirrors lag GitLab
+`pisco_segmenter` GitHub is at `b805b9a` (9 behind) and `underwater-lucyd`
+GitHub at `7091a78` while GitLab has `99c2933`. GitLab is authoritative for
+both; the GitHub mirrors are push-only copies and nobody is pushing them.
+
 ## New-chat prompt
-> Read docs/handoff/08-infrastructure.md. I want to <fix the credentials in the
-> config / sync pisco_segmenter to GitHub / fix the orchestrator --image-ext
-> forwarding>.
+> Read docs/handoff/08-infrastructure.md. I want to <sync pisco_segmenter and
+> underwater-lucyd to GitHub / pull the segmenter's 9 Hub commits (read topic
+> 09 first) / fix the orchestrator --image-ext forwarding>.

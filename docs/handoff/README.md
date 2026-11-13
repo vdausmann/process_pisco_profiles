@@ -11,16 +11,27 @@ live, what is still open, and a prompt to open a new chat with.
 | [03](03-atair-validation.md) | ATAIR-BSH validation + not-living re-screening | closed, awaiting validation |
 | [04](04-dualvit-training.md) | Dual-ViT retraining + model publishing | closed |
 | [05](05-so308-campaign.md) | SO308 processing campaign | **open — main thread** |
-| [06](06-scale-bars.md) | Scale bars on annotator crops | **open — half-finished** |
+| [06](06-scale-bars.md) | Scale bars on annotator crops | closed |
 | [07](07-benchmark-extraction.md) | Benchmark annotation extraction | closed |
 | [08](08-infrastructure.md) | Repos, reproducibility, known issues | **open items** |
-| [09](09-hub-integration.md) | PIScO Hub integration — background estimation changed | **open — affects all future runs** |
+| [09](09-hub-integration.md) | PIScO Hub integration, HDF5 route, background estimation | **read first — affects all future runs** |
+
+## Which code these topics describe
+
+Everything in 01-07 was run on the **old python route**
+(`process_pisco_profiles.py` -> `Deconv_crops/` + TSV -> `create_ecotaxa_zips`).
+Since 2026-09 there is a **second, now-primary route** through the C++
+segmenter's `result.h5`: `vit_classify_hdf5.py` -> `export_hdf5_to_ecotaxa.py`
+-> `ecotaxa_import.py`, driven as Hub tasks from `toolbox.json`/`run*.sh`,
+closing a full retrain loop. [Topic 09](09-hub-integration.md) maps both.
+Findings about *data* carry over unchanged; file paths in 01-07 may not.
 
 ## The one thing to carry into every topic
 
 Deconvolution model + crop isolation + classifier are **one coupled unit**.
 Since 2026-09, **background estimation** is a fourth member of that unit (see
-[09](09-hub-integration.md)). Changing any of them without retraining the ViT is an out-of-domain shift: a
+[09](09-hub-integration.md)). Changing any of them without retraining the ViT
+is an out-of-domain shift: a
 controlled test measured an 83-93% collapse in the living rate at unchanged
 confidence. Every abundance number in this session carries that caveat unless
 the classifier was trained on matching crops.
