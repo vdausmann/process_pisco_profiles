@@ -5,6 +5,14 @@ now **reconciled** (this session's work rebased on top, 2026-11-13).
 `pisco_segmenter` local is still **9 commits behind** and was reviewed
 read-only — nothing pulled or merged.
 
+> **The old behaviour is pinned.** `pisco_segmenter` GitLab branch
+> **`pre-hub-background`** -> `b805b9a` is the exact code every result in
+> topics 01-07 was produced with: per-frame rolling-window background, before
+> the per-block change below. Created 2026-11-13. It is a pointer at a commit
+> already on `main`, so it adds nothing and can be deleted freely.
+> Check it out to reproduce or continue any of this session's runs:
+> `git checkout -b pre-hub-background --track gitlab/pre-hub-background`
+
 Read this first: it reframes where the other topics' code lives. Everything in
 topics 01-07 was done on the **old python route**; the Hub work adds a
 **second, now-primary route** through the C++ segmenter's `result.h5`.
@@ -115,6 +123,11 @@ therefore the thresholded contours. So:
    of every future run. If SO308 is to stay comparable with the Madagascar
    subset already processed, either finish SO308 on the current code or re-run
    the two completed profiles after pulling.
+   The `pre-hub-background` branch above makes "stay pinned" an explicit,
+   reproducible choice rather than an accident of not having pulled — but note
+   the local checkout is still on **`main`**, so a casual `git pull` there
+   would still jump it forward mid-campaign. Switch the checkout to the
+   pinned branch (a no-op for the files, same commit) if that risk matters.
 2. **If standardising on the block background**, both ViTs want retraining on
    matching crops — and that is also the moment to settle the deconvolution
    choice (topic 02) and switch crop isolation on, so one retrain absorbs all
