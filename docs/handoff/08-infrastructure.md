@@ -67,9 +67,11 @@ right split: example versioned, local ignored. Kept here as a note only so
 nobody "fixes" the example again assuming it is secret.
 
 ### 2. Local `pisco_segmenter` is behind GitLab — see topic 09
-**Still open.** (The sibling problem on `process_pisco_profiles` is now
-resolved — see above.) GitLab `main` is at `8eff671`, **9 commits ahead** of
-local `b805b9a`. This is
+**Still open, but the old behaviour is now pinned**: GitLab branch
+**`pre-hub-background`** -> `b805b9a` preserves the exact code this session's
+results came from (created 2026-11-13). (The sibling problem on
+`process_pisco_profiles` is now resolved — see above.) GitLab `main` is at
+`8eff671`, **9 commits ahead** of local `b805b9a`. This is
 not just packaging: **background estimation changed** and there is no legacy
 switch, so pulling changes the output of every future run.
 **[Topic 09](09-hub-integration.md) has the analysis.** GitHub `main` is also
