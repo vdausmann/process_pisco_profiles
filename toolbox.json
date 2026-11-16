@@ -92,6 +92,17 @@
                         "type": "boolean",
                         "default": true,
                         "description": "Write each crop as the object alone in a tight box, everything outside its mask white - the crop the python route saved and the classifier was trained on. Off writes the segmenter's stored box as-is, with its padding and any neighbours."
+                    },
+                    "subsampleMax": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "default": 0,
+                        "description": "Export at most this many not-living objects, drawn at random but reproducibly (the same ones on a re-export); every living object is exported regardless. 0 exports all. Needs predictionsPath. The kept fraction is written to subsample.json beside the export, for scaling not-living abundances back up."
+                    },
+                    "notLivingLabel": {
+                        "type": "string",
+                        "default": "not-living",
+                        "description": "Label of the binary stage's not-living class, resolved through the taxonomy map. Only used with subsampleMax."
                     }
                 }
             },
