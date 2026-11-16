@@ -302,7 +302,7 @@
         },
         {
             "name": "pisco_ecotaxa_import",
-            "description": "Import an exported archive into EcoTaxa. Creates a new project by default, or adds to an existing one when projectId is set. Nothing is copied: the Hub's share is mounted inside EcoTaxa's server load area, so the archive is imported where it already sits. Writes import.json with the project id, so a following task can attach features to the project this one created.",
+            "description": "Import an exported archive into EcoTaxa. Creates a new project by default, or adds to an existing one when projectId is set. For an EcoTaxa that shares a filesystem with the Hub nothing is copied - the share is mounted inside its server load area, so the archive is imported where it already sits. For a remote instance such as ecotaxa.obs-vlfr.fr, set uploadArchive and it goes to EcoTaxa's FTP drop first. Writes import.json with the project id, so a following task can attach features to the project this one created.",
             "tags": [
                 "pisco",
                 "ecotaxa",
@@ -314,9 +314,7 @@
             "default_priority": 3,
             "default_weight": 1,
             "failed_ok": false,
-            "requires": [
-                "ecotaxa"
-            ],
+            "requires": [],
             "settings_format": "ini",
             "settings_schema": {
                 "type": "object",
@@ -372,7 +370,17 @@
                     "url": {
                         "type": "string",
                         "default": "",
-                        "description": "EcoTaxa base URL. Empty uses the local instance on loopback."
+                        "description": "EcoTaxa base URL, WITHOUT a trailing /api (the tool appends it). Empty uses the local instance on loopback; for the public instance use https://ecotaxa.obs-vlfr.fr together with uploadArchive."
+                    },
+                    "uploadArchive": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "Drop each archive on EcoTaxa's FTP and import it from there. Required for any instance that does not share a filesystem with the Hub, such as ecotaxa.obs-vlfr.fr; needs an \"ftp\" block in the credentials file. Leave off for a co-located instance, where the archive is imported where it already sits."
+                    },
+                    "credentialsPath": {
+                        "type": "string",
+                        "default": "",
+                        "description": "JSON file holding {\"user\": ..., \"password\": ...} for this instance. Empty uses /opt/pisco/etc/ecotaxa.json. Credentials stay in a file on the machine because task settings are rendered to disk in plain text."
                     }
                 }
             },

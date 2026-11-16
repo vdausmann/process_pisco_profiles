@@ -29,6 +29,8 @@ ACCESS="$(cfg access)"
 UPDATE_MODE="$(cfg updateMode)"
 SKIP_EXISTING="$(cfg skipExistingObjects)"
 URL="$(cfg url)"
+UPLOAD="$(cfg uploadArchive)"
+CREDENTIALS="$(cfg credentialsPath)"
 
 for required in ARCHIVE TARGET; do
     if [[ -z "${!required}" ]]; then
@@ -44,15 +46,22 @@ ARGS=("$ARCHIVE" "-o" "$TARGET")
 [[ -n "$UPDATE_MODE" ]] && ARGS+=("--update-mode" "$UPDATE_MODE")
 [[ -n "$URL" ]] && ARGS+=("--url" "$URL")
 [[ -n "$ACCESS" ]] && ARGS+=("--access" "${ACCESS,,}")
+[[ -n "$CREDENTIALS" ]] && ARGS+=("--credentials" "$CREDENTIALS")
 case "${SKIP_EXISTING,,}" in 1|true|yes|on) ARGS+=("--skip-existing-objects") ;; esac
+# A remote EcoTaxa shares no filesystem with us, so the archive goes to the
+# EcoTaxa FTP drop instead of being imported where it already sits.
+case "${UPLOAD,,}" in 1|true|yes|on) ARGS+=("--upload") ;; esac
 # visible defaults to true; only an explicit falsey value turns it off.
 case "${VISIBLE,,}" in 0|false|no|off) ARGS+=("--no-visible") ;; esac
 
 unset PYTHONPATH PYTHONHOME
 PYTHON="${PISCO_ECOTAXA_PYTHON:-/opt/pisco/venvs/ecotaxa/bin/python}"
 if [[ ! -x "$PYTHON" ]]; then
-    echo "Warning: $PYTHON is not executable, falling back to the system python." >&2
-    PYTHON="$(command -v python3)"
+    # Only the features tool needs psycopg; importing is pure stdlib, so the
+    # ordinary PIScO interpreter will do when the EcoTaxa venv is absent (it
+    # only exists on a machine that hosts an EcoTaxa).
+    PYTHON="${PISCO_PYTHON:-$(command -v python3)}"
+    echo "Note: no EcoTaxa venv, using $PYTHON" >&2
 fi
 
 echo "=== EcoTaxa import ==="
