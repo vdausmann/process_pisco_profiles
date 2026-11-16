@@ -56,6 +56,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import io
 import json
 import multiprocessing
@@ -355,8 +356,10 @@ def _frame_objects(task):
     scale_bar, pixel_size_um = o["scale_bar"], o["pixel_size_um"]
     predictions, prediction_model = o["predictions"], o["prediction_model"]
     isolate, ctd_cast, profile = o["isolate"], o["ctd_cast"], o["profile"]
+    subsample_keep, not_living_id = o["subsample_keep"], o["not_living_id"]
 
-    counts = {"skipped": 0, "links": 0, "links_too_long": 0, "predicted": 0}
+    counts = {"skipped": 0, "links": 0, "links_too_long": 0, "predicted": 0,
+              "subsampled": 0}
     out = []
     meta = parse_frame_name(frame)
     bb_x = np.asarray(group["boundingBoxX"])
@@ -375,6 +378,16 @@ def _frame_objects(task):
         if min_size and w <= min_size and h <= min_size:
             counts["skipped"] += 1
             continue
+
+        object_id = f"{frame}_{i + 1}"
+        # Drop the not-living objects this export did not draw, before any of
+        # the crop work: that is the whole point of subsampling.
+        if subsample_keep is not None and predictions:
+            predicted = predictions.get(object_id)
+            if (predicted and predicted[0] == not_living_id
+                    and object_id not in subsample_keep):
+                counts["subsampled"] += 1
+                continue
 
         off = int(offsets[i])
         n_px = w * h
@@ -398,7 +411,6 @@ def _frame_objects(task):
             # object alone in a tight box, as the python route saved it.
             crop, mask, dx, dy = tight_masked(crop, mask)
             x, y, h, w = x + dx, y + dy, crop.shape[0], crop.shape[1]
-        object_id = f"{frame}_{i + 1}"
         rel_img = f"{object_id}.{image_ext}"
         buf = io.BytesIO()
         if scale_bar:
@@ -556,6 +568,8 @@ def export(
     archive: bool = True,
     max_zip_size_mb: int = 500,
     workers: int | None = None,
+    subsample_max: int = 0,
+    not_living_id: int | None = None,
 ) -> tuple[Path, int]:
     """Write the EcoTaxa TSV and the import archives (or, without `archive`,
     the crops as files). Returns (tsv_path, n_objects)."""
@@ -570,8 +584,28 @@ def export(
         frames = [(rank, name) for rank, name in enumerate(sorted(f.keys()), start=1)
                   if isinstance(f[name], h5py.Group) and "boundingBoxW" in f[name]]
 
+    # Which not-living objects this export keeps. Drawn here, once, so every
+    # worker agrees and so a re-export of the same profile draws the *same*
+    # ones: the order is a stable digest of the object id, not RNG state.
+    subsample_keep = None
+    n_not_living = 0
+    if subsample_max and predictions and not_living_id is not None:
+        not_living = [oid for oid, p in predictions.items() if p[0] == not_living_id]
+        n_not_living = len(not_living)
+        if n_not_living > subsample_max:
+            not_living.sort(key=lambda oid: hashlib.blake2b(
+                oid.encode(), digest_size=8).digest())
+            subsample_keep = set(not_living[:subsample_max])
+            print(f"  subsample: keeping {subsample_max} of {n_not_living} "
+                  f"not-living objects ({subsample_max / n_not_living:.3%}); "
+                  f"every living object is exported")
+        else:
+            print(f"  subsample: {n_not_living} not-living objects is already "
+                  f"within {subsample_max}, exporting all")
+
     _JOB.clear()
-    _JOB.update(h5_path=str(h5_path), min_size=min_size,
+    _JOB.update(subsample_keep=subsample_keep, not_living_id=not_living_id,
+                h5_path=str(h5_path), min_size=min_size,
                 absolute_pressure=absolute_pressure, image_ext=image_ext,
                 link_base=link_base, workflow_id=workflow_id, scale_bar=scale_bar,
                 pixel_size_um=pixel_size_um, predictions=predictions,
@@ -588,7 +622,8 @@ def export(
     if not archive:
         crop_dir.mkdir(parents=True, exist_ok=True)
 
-    totals = {"skipped": 0, "links": 0, "links_too_long": 0, "predicted": 0}
+    totals = {"skipped": 0, "links": 0, "links_too_long": 0, "predicted": 0,
+              "subsampled": 0}
     n_objects = 0
     workers = workers or min(8, os.cpu_count() or 1)
     # fork: the workers inherit the predictions without pickling them.
@@ -616,6 +651,23 @@ def export(
     if predictions is not None:
         print(f"  predictions: {totals['predicted']} of {n_objects} objects annotated"
               + (f" ({prediction_model})" if prediction_model else ""))
+    if subsample_keep is not None:
+        kept = n_not_living - totals["subsampled"]
+        fraction = kept / n_not_living if n_not_living else 1.0
+        # Abundances of the not-living fraction have to be divided by this to
+        # mean anything, so it is written down rather than left to be inferred.
+        (out_dir / "subsample.json").write_text(json.dumps({
+            "not_living_total": n_not_living,
+            "not_living_exported": kept,
+            "not_living_dropped": totals["subsampled"],
+            "kept_fraction": fraction,
+            "subsample_max": subsample_max,
+            "selection": "stable blake2b digest of object_id; a re-export of "
+                         "this profile draws the same objects",
+        }, indent=2) + "\n")
+        print(f"  subsample: {kept} of {n_not_living} not-living exported "
+              f"({fraction:.3%}), {totals['subsampled']} dropped "
+              f"-> subsample.json")
     if scale_bar:
         print(f"  scale bar: reversible, at {pixel_size_um} um/px "
               f"({SCALE_BAR_STRIP_H} px strip below each crop)")
@@ -642,6 +694,18 @@ def main() -> int:
                     help="split archives above this size in MB (default: 500)")
     ap.add_argument("--min-size", type=int, default=0,
                     help="drop objects whose width and height are both <= this")
+    ap.add_argument("--subsample-max", type=int, default=0,
+                    help="Export at most this many not-living objects, drawn "
+                         "at random but reproducibly; every living object is "
+                         "exported regardless. 0 (the default) exports all. "
+                         "Needs --predictions, since the verdict is what says "
+                         "which objects are not-living. The kept fraction is "
+                         "written to subsample.json, for scaling not-living "
+                         "abundances back up.")
+    ap.add_argument("--not-living-label", default="not-living",
+                    help="Label of the binary stage's not-living class, "
+                         "resolved to a taxon id through the taxonomy map "
+                         "(default: not-living).")
     ap.add_argument("--gauge-pressure", action="store_true",
                     help="treat filename pressure as gauge; by default it is "
                          "absolute and 10.1325 dbar is subtracted for depth")
@@ -715,6 +779,21 @@ def main() -> int:
               + (f", {n_gate} gate-only, {n_unmapped} unmapped"
                  if (n_gate or n_unmapped) else ""))
 
+    not_living_id = None
+    if args.subsample_max:
+        if not predictions:
+            print("ERROR: --subsample-max needs --predictions: without a "
+                  "verdict there is no way to tell which objects are "
+                  "not-living.", file=sys.stderr)
+            return 1
+        from ecotaxa_taxonomy_map import load_map
+        not_living_id = load_map(Path(args.taxonomy_map)).get(args.not_living_label)
+        if not_living_id is None:
+            print(f"ERROR: {args.not_living_label!r} is not in "
+                  f"{args.taxonomy_map}; --not-living-label must name the "
+                  f"binary stage's not-living class.", file=sys.stderr)
+            return 1
+
     print(f"Exporting {src}")
     tsv_path, n = export(
         src, out_dir, profile_name=profile, min_size=args.min_size,
@@ -724,7 +803,8 @@ def main() -> int:
         predictions=predictions, prediction_model=prediction_model,
         isolate=args.isolate_crops, ctd_cast=args.ctd_cast,
         archive=not args.no_zip, max_zip_size_mb=args.max_zip_size,
-        workers=args.workers)
+        workers=args.workers, subsample_max=args.subsample_max,
+        not_living_id=not_living_id)
 
     if n == 0:
         print("ERROR: no objects exported", file=sys.stderr)

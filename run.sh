@@ -48,6 +48,8 @@ SCALE_BAR="$(cfg scaleBar)"
 PIXEL_SIZE="$(cfg pixelSizeUm)"
 ISOLATE="$(cfg isolateCrops)"
 CTD_CAST="$(cfg ctdCast)"
+SUBSAMPLE_MAX="$(cfg subsampleMax)"
+NOT_LIVING_LABEL="$(cfg notLivingLabel)"
 
 if [[ -z "$SOURCE_PATH" ]]; then
     echo "Error: sourcePath is required." >&2
@@ -67,6 +69,8 @@ ARGS=("$SOURCE_PATH" "-o" "$TARGET_PATH")
 [[ -n "$TAXONOMY_MAP" ]] && ARGS+=("--taxonomy-map" "$TAXONOMY_MAP")
 [[ -n "$PIXEL_SIZE" ]] && ARGS+=("--pixel-size" "$PIXEL_SIZE")
 [[ -n "$CTD_CAST" ]] && ARGS+=("--ctd-cast" "$CTD_CAST")
+[[ -n "$SUBSAMPLE_MAX" ]] && ARGS+=("--subsample-max" "$SUBSAMPLE_MAX")
+[[ -n "$NOT_LIVING_LABEL" ]] && ARGS+=("--not-living-label" "$NOT_LIVING_LABEL")
 # Crop isolation is on by default; only an explicit falsey value turns it off.
 case "${ISOLATE,,}" in
     0|false|no|off) ARGS+=("--no-isolate-crops") ;;
