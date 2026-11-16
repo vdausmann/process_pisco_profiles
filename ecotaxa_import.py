@@ -5,10 +5,23 @@ Creates a new project by default and imports into it; pass ``--project-id`` to
 add to one that already exists. Several archives (a split export) go into the
 same project, in order.
 
-Nothing is copied. The Hub's shared storage is mounted inside EcoTaxa as a
-subdirectory of its server load area, so an archive sitting in a workflow's
-output directory is already visible to the importer -- this only has to
-translate the path (``/mnt/pisco/x`` -> ``/pisco/x``).
+Two ways the archive reaches EcoTaxa, because the two deployments differ:
+
+* **Co-located** (default). Nothing is copied: the Hub's shared storage is
+  mounted inside EcoTaxa as a subdirectory of its server load area, so an
+  archive sitting in a workflow's output directory is already visible to the
+  importer -- this only has to translate the path
+  (``/mnt/pisco/x`` -> ``/pisco/x``).
+* **Remote** (``--upload``). A public instance such as ecotaxa.obs-vlfr.fr
+  shares no filesystem with us, so each archive is dropped on its FTP, which is
+  mounted inside the importer's own area, and imported by the path relative to
+  that area. Everything after that -- project creation, the import job, the
+  questions it may ask, ``import.json`` -- is identical.
+
+  Not the ``/user_files/`` REST upload, though the API documentation suggests
+  it: that endpoint works, but obs-vlfr resolves *every* source_path against
+  its import area, so the absolute path it hands back imports as
+  ``/ecotaxa_import_area/home/ecotaxa/...`` and fails. See ftp_upload().
 
 The project id is written to ``import.json`` in the output directory, so a
 following task can attach features to the project this one just created
@@ -25,12 +38,15 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import ftplib
 import json
 import os
 import sys
 import time
+
 import urllib.error
 import urllib.request
+
 from pathlib import Path
 
 DEFAULT_CREDENTIALS = "/opt/pisco/etc/ecotaxa.json"
@@ -64,6 +80,78 @@ def api(base, path, data=None, token=None, timeout=600, method=None):
     except urllib.error.HTTPError as exc:
         raise SystemExit(f"ERROR: {path} returned HTTP {exc.code}: "
                          f"{exc.read().decode()[:500]}")
+
+
+FTP_IMPORT_PREFIX = "FTP"
+
+
+def ftp_mkdirs(ftp, rel_dir):
+    """Walk into rel_dir from the current directory, creating what is missing."""
+    for part in [p for p in rel_dir.split("/") if p]:
+        try:
+            ftp.cwd(part)
+        except ftplib.all_errors:
+            ftp.mkd(part)
+            ftp.cwd(part)
+
+
+def ftp_upload(conf: dict, archive: Path, timeout=3600) -> str:
+    """Drop an archive on EcoTaxa's FTP and return its import source_path.
+
+    The remote counterpart of the shared-storage trick. An instance we share no
+    filesystem with still cannot be handed a local path, and -- this is the part
+    the API documentation gets wrong -- it cannot be handed the absolute path a
+    user-file upload returns either: ecotaxa.obs-vlfr.fr resolves *every*
+    source_path against its import area, so a POST to /user_files/ lands
+    somewhere the importer cannot reach (observed as
+    ``/ecotaxa_import_area/home/ecotaxa/.../x.zip: No such file or directory``).
+
+    What works is the FTP drop, which is mounted inside that import area: upload
+    into ``<remote_dir>/<subdir>/`` and import the path relative to the area,
+    under the ``FTP/`` prefix. This mirrors upload_to_ecotaxa.py, which is how
+    every archive before the Hub reached EcoTaxa.
+    """
+    host = conf.get("host") or "plankton.obs-vlfr.fr"
+    user = conf.get("user") or conf.get("username")
+    password = conf.get("password")
+    remote_dir = (conf.get("remote_dir") or "").rstrip("/")
+    subdir = (conf.get("subdir") or "").strip("/")
+    if not (user and password and remote_dir):
+        raise SystemExit(
+            "ERROR: --upload needs an \"ftp\" block in the credentials file with "
+            "host, user, password and remote_dir (the Ecotaxa_Data_to_import "
+            "directory); subdir is optional.")
+
+    # The importer sees the drop under its own root, not under the FTP home, so
+    # the path it is given is built from the directory's *name* downwards.
+    root_name = Path(remote_dir).name
+    parts = [root_name] + ([subdir] if subdir else [])
+    rel_dir = "/".join(parts)
+
+    with ftplib.FTP(host, timeout=timeout) as ftp:
+        ftp.login(user, password)
+        # `remote_dir` is the path EcoTaxa sees
+        # (/plankton_rw/ftp_plankton/Ecotaxa_Data_to_import), but the FTP
+        # account is chrooted with that directory at its root, so navigation
+        # starts from the name alone. Walking the absolute path fails with
+        # "550 Failed to change directory".
+        ftp_mkdirs(ftp, rel_dir)
+        with archive.open("rb") as fh:
+            ftp.storbinary(f"STOR {archive.name}", fh)
+        landed = ftp.pwd().rstrip("/")
+
+    # Prefer the directory we actually landed in, so a server that rewrites the
+    # path does not silently produce an import pointing at nothing.
+    marker = root_name + "/"
+    actual = landed.lstrip("/")
+    if marker in actual:
+        actual = actual[actual.index(marker):]
+    elif actual.endswith(root_name):
+        actual = root_name
+    else:
+        actual = rel_dir
+    return "/".join([FTP_IMPORT_PREFIX, actual, archive.name])
+
 
 
 def load_credentials(path, user, password):
@@ -224,6 +312,13 @@ def main() -> int:
     ap.add_argument("--password", default=os.environ.get("ECOTAXA_PASSWORD"))
     ap.add_argument("--shared-root", default=DEFAULT_SHARED_ROOT)
     ap.add_argument("--load-area-prefix", default=DEFAULT_LOAD_AREA_PREFIX)
+    ap.add_argument("--upload", action="store_true",
+                    help="Push each archive into the user file area and import "
+                         "the path the server returns, instead of assuming "
+                         "EcoTaxa can already see it on a shared filesystem. "
+                         "Required for a remote instance such as "
+                         "ecotaxa.obs-vlfr.fr. Needs an \"ftp\" block in the "
+                         "credentials file.")
     ap.add_argument("--update-mode", default="",
                     help="'Yes' updates data, 'Cla' also updates classification")
     ap.add_argument("--skip-existing-objects", action="store_true")
@@ -261,6 +356,19 @@ def main() -> int:
               f"{args.credentials}, or pass --user/--password.", file=sys.stderr)
         return 1
 
+    # The FTP drop has its own account, kept in the same file rather than in
+    # task settings. Read it up front so a missing block fails before the
+    # project is created, not after.
+    ftp_conf = {}
+    if args.upload:
+        candidate = Path(args.credentials)
+        if candidate.exists():
+            ftp_conf = json.loads(candidate.read_text()).get("ftp") or {}
+        if not ftp_conf:
+            print(f"ERROR: --upload needs an \"ftp\" block in {args.credentials}.",
+                  file=sys.stderr)
+            return 1
+
     token = api(args.url, "/login", {"username": user, "password": password})
 
     project_id = args.project_id
@@ -285,8 +393,13 @@ def main() -> int:
 
     total_rows = 0
     for archive in archives:
-        source_path = to_load_area_path(archive, args.shared_root,
-                                        args.load_area_prefix)
+        if args.upload:
+            size_mb = archive.stat().st_size / (1 << 20)
+            print(f"  uploading {archive.name} ({size_mb:.0f} MB) by FTP ...")
+            source_path = ftp_upload(ftp_conf, archive)
+        else:
+            source_path = to_load_area_path(archive, args.shared_root,
+                                            args.load_area_prefix)
         print(f"  {archive.name} -> {source_path}")
         response = api(args.url, f"/file_import/{project_id}", {
             "source_path": source_path,
