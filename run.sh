@@ -50,6 +50,8 @@ ISOLATE="$(cfg isolateCrops)"
 CTD_CAST="$(cfg ctdCast)"
 SUBSAMPLE_MAX="$(cfg subsampleMax)"
 NOT_LIVING_LABEL="$(cfg notLivingLabel)"
+PARTICLE_TABLE="$(cfg particleTable)"
+TABLE_ONLY="$(cfg tableOnly)"
 
 if [[ -z "$SOURCE_PATH" ]]; then
     echo "Error: sourcePath is required." >&2
@@ -82,6 +84,15 @@ esac
 # The Hub renders booleans as 0/1; accept the usual spellings too.
 case "${GAUGE_PRESSURE,,}" in
     1|true|yes|on) ARGS+=("--gauge-pressure") ;;
+esac
+# The particle table is on by default; only an explicit falsey value turns it off.
+case "${PARTICLE_TABLE,,}" in
+    0|false|no|off) ARGS+=("--no-particle-table") ;;
+esac
+# Only the particle table, for a run exported before it existed (see
+# backfill_particle_tables.py, which sets this on a copy of the run's settings).
+case "${TABLE_ONLY,,}" in
+    1|true|yes|on) ARGS+=("--table-only") ;;
 esac
 
 # h5py, skimage and PIL live in the torch venv on the workers. The Hub server

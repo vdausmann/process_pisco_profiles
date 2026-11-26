@@ -64,6 +64,7 @@ import os
 import re
 import sys
 import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 import h5py
@@ -74,6 +75,7 @@ from PIL import Image
 # processing workers have neither.
 from scale_bar import PIXEL_SIZE_UM, SCALE_BAR_STRIP_H, save_crop_with_scale_bar
 from crops import tight_masked
+from particle_table import ParticleTableWriter, table_name
 from skimage import measure
 
 # --- constants shared with utils.py, duplicated to keep this import-light ----
@@ -150,6 +152,27 @@ def parse_frame_name(name: str) -> dict:
     # The tail is HHMMSS plus a frame counter; EcoTaxa wants exactly HHMMSS.
     out["time"] = time_part[:6].zfill(6)
     return out
+
+
+def frame_time(name: str) -> float:
+    """The frame's timestamp as Unix seconds (camera clock, read as UTC), or NaN.
+
+    The name's tail is HHMMSS, followed by centiseconds when it is eight
+    digits long (the profile dataset's convention); anything after the first
+    six digits of a longer or shorter tail is ignored.
+    """
+    m = _FRAME_RE.match(name)
+    if not m:
+        return float("nan")
+    date_part, _, tail = m.group("datetime").partition("-")
+    try:
+        t = datetime.strptime(date_part + tail[:6].zfill(6), "%Y%m%d%H%M%S")
+    except ValueError:
+        return float("nan")
+    seconds = t.replace(tzinfo=timezone.utc).timestamp()
+    if len(tail) == 8:
+        seconds += int(tail[6:]) / 100.0
+    return seconds
 
 
 # --- predictions -----------------------------------------------------------
@@ -320,6 +343,32 @@ TEXT_COLUMNS = {
 }
 
 
+# The particle table (particle_table.py): the TSV's measurements for every
+# object, typed. object_depth stands for the TSV's identical depth_min/max;
+# object_unix_time is the frame's timestamp in Unix seconds; object_exported says
+# whether the object went to EcoTaxa (0: left out by the subsample).
+TABLE_STR = ["object_id", "object_annotation_category"]
+TABLE_INT = ["object_frame_index", "object_number", "object_x", "object_y",
+             "object_width", "object_height", "object_annotation_category_id",
+             "object_exported"]
+TABLE_FLOAT = ["object_unix_time", "object_lat", "object_lon", "object_pressure",
+               "object_depth", "object_temperature", "object_area", "object_esd",
+               "object_prediction_score"] + FEATURE_COLUMNS
+
+
+def _num(value) -> float:
+    if value is None or value == "":
+        return float("nan")
+    return float(value)
+
+
+def _table_arrays(cols: dict) -> dict:
+    out = {c: np.asarray(cols[c], dtype=object).astype(str) for c in TABLE_STR}
+    out.update({c: np.asarray(cols[c], dtype=np.int32) for c in TABLE_INT})
+    out.update({c: np.asarray(cols[c], dtype=np.float64) for c in TABLE_FLOAT})
+    return out
+
+
 def _fmt(value) -> str:
     if value is None:
         return ""
@@ -357,11 +406,14 @@ def _frame_objects(task):
     predictions, prediction_model = o["predictions"], o["prediction_model"]
     isolate, ctd_cast, profile = o["isolate"], o["ctd_cast"], o["profile"]
     subsample_keep, not_living_id = o["subsample_keep"], o["not_living_id"]
+    table, emit = o["table"], o["emit"]
 
     counts = {"skipped": 0, "links": 0, "links_too_long": 0, "predicted": 0,
               "subsampled": 0}
     out = []
+    tab = {c: [] for c in TABLE_STR + TABLE_INT + TABLE_FLOAT} if table else None
     meta = parse_frame_name(frame)
+    t_frame = frame_time(frame)
     bb_x = np.asarray(group["boundingBoxX"])
     bb_y = np.asarray(group["boundingBoxY"])
     bb_w = np.asarray(group["boundingBoxW"])
@@ -380,14 +432,18 @@ def _frame_objects(task):
             continue
 
         object_id = f"{frame}_{i + 1}"
-        # Drop the not-living objects this export did not draw, before any of
-        # the crop work: that is the whole point of subsampling.
+        # The not-living objects this export did not draw get no image. Without
+        # a particle table they need no work at all, which is the point of
+        # subsampling; with one they are still measured, for its rows.
+        exported = True     # in the EcoTaxa selection, whether drawn now or not
         if subsample_keep is not None and predictions:
             predicted = predictions.get(object_id)
             if (predicted and predicted[0] == not_living_id
                     and object_id not in subsample_keep):
                 counts["subsampled"] += 1
-                continue
+                exported = False
+                if not table:
+                    continue
 
         off = int(offsets[i])
         n_px = w * h
@@ -412,15 +468,6 @@ def _frame_objects(task):
             crop, mask, dx, dy = tight_masked(crop, mask)
             x, y, h, w = x + dx, y + dy, crop.shape[0], crop.shape[1]
         rel_img = f"{object_id}.{image_ext}"
-        buf = io.BytesIO()
-        if scale_bar:
-            # Records the original size in a PNG text chunk, so
-            # strip_scale_bar() can undo the strip and any right
-            # padding exactly before the crop reaches a classifier.
-            save_crop_with_scale_bar(Image.fromarray(crop), buf,
-                                     pixel_resolution=pixel_size_um)
-        else:
-            Image.fromarray(crop).save(buf, format="PNG")
 
         row = {c: "" for c in ALL_COLUMNS}
         row.update({
@@ -460,7 +507,7 @@ def _frame_objects(task):
                 row["object_annotation_status"] = "predicted"
                 row["object_prediction_score"] = score
                 row["object_prediction_model"] = prediction_model
-                counts["predicted"] += 1
+                counts["predicted"] += exported and emit
 
         if link_base and workflow_id:
             # Points at the Hub, which resolves the workflow to its
@@ -470,9 +517,9 @@ def _frame_objects(task):
             link = f"{link_base}/v/{workflow_id}/{frame}/{i + 1}"
             if len(link) <= OBJECT_LINK_MAX:
                 row["object_link"] = link
-                counts["links"] += 1
+                counts["links"] += exported and emit
             else:
-                counts["links_too_long"] += 1
+                counts["links_too_long"] += exported and emit
 
         if meta["pressure"] is not None:
             depth = meta["pressure"] - (ATM_DBAR if absolute_pressure else 0.0)
@@ -487,10 +534,48 @@ def _frame_objects(task):
                 row["object_esd"] = round(
                     float(area_to_esd(feats["object_area_exc"], pixel_size_um)), 2)
 
+        if table:
+            for c in TABLE_STR:
+                tab[c].append(row[c])
+            tab["object_frame_index"].append(rank)
+            tab["object_number"].append(i + 1)
+            for c in ("object_x", "object_y", "object_width", "object_height"):
+                tab[c].append(row[c])
+            tab["object_annotation_category_id"].append(
+                int(row["object_annotation_category_id"])
+                if row["object_annotation_category_id"] != "" else -1)
+            tab["object_exported"].append(int(exported))
+            tab["object_unix_time"].append(t_frame)
+            tab["object_depth"].append(_num(row["object_depth_min"]))
+            for c in TABLE_FLOAT:
+                if c not in ("object_unix_time", "object_depth"):
+                    tab[c].append(_num(row.get(c)))
 
+        if not (exported and emit):
+            continue
+        buf = io.BytesIO()
+        if scale_bar:
+            # Records the original size in a PNG text chunk, so
+            # strip_scale_bar() can undo the strip and any right
+            # padding exactly before the crop reaches a classifier.
+            save_crop_with_scale_bar(Image.fromarray(crop), buf,
+                                     pixel_resolution=pixel_size_um)
+        else:
+            Image.fromarray(crop).save(buf, format="PNG")
         out.append(("\t".join(_fmt(row.get(c, "")) for c in ALL_COLUMNS),
                     rel_img, buf.getvalue()))
-    return out, counts
+
+    frame_row = None
+    if table:
+        n_tab = len(tab["object_id"])
+        depth = (meta["pressure"] - (ATM_DBAR if absolute_pressure else 0.0)
+                 if meta["pressure"] is not None else float("nan"))
+        frame_row = {"name": frame, "frame_index": rank,
+                     "pressure": _num(meta["pressure"]), "depth": depth,
+                     "temperature": _num(meta["temperature"]),
+                     "time": t_frame, "n_objects": n_tab}
+        tab = _table_arrays(tab)
+    return out, counts, tab, frame_row
 
 
 class _Archives:
@@ -570,11 +655,24 @@ def export(
     workers: int | None = None,
     subsample_max: int = 0,
     not_living_id: int | None = None,
+    particle_table: bool = True,
+    table_only: bool = False,
+    table_attrs: dict | None = None,
 ) -> tuple[Path, int]:
     """Write the EcoTaxa TSV and the import archives (or, without `archive`,
-    the crops as files). Returns (tsv_path, n_objects)."""
+    the crops as files), and the particle table of every object.
+    Returns (tsv_path, n_objects).
+
+    `table_only` writes the particle table alone - no TSV, no images - for
+    runs exported before the table existed. Its `object_exported` flags are
+    still right, because the subsample is drawn the same way every time.
+    Returns (table_path, objects in the table) then."""
+    particle_table = particle_table or table_only
+    emit = not table_only
     profile = profile_name or h5_path.parent.name
-    if link_base and not workflow_id:
+    if not workflow_id:
+        # Also recorded in the particle table, which is how the Hub finds
+        # the run behind an EcoTaxa project; the link uses it only with a base.
         workflow_id = workflow_id_from_path(h5_path)
     link_base = link_base.rstrip("/") if link_base else None
 
@@ -610,41 +708,82 @@ def export(
                 link_base=link_base, workflow_id=workflow_id, scale_bar=scale_bar,
                 pixel_size_um=pixel_size_um, predictions=predictions,
                 prediction_model=prediction_model, isolate=isolate,
-                ctd_cast=ctd_cast, profile=profile)
+                ctd_cast=ctd_cast, profile=profile,
+                table=particle_table, emit=emit)
 
     header = "\t".join(ALL_COLUMNS) + "\n" + "\t".join(
         "[t]" if c in TEXT_COLUMNS else "[f]" for c in ALL_COLUMNS) + "\n"
     tsv_path = out_dir / f"ecotaxa_{profile}.tsv"
-    archives = _Archives(out_dir, profile, max_zip_size_mb) if archive else None
+    archives = _Archives(out_dir, profile, max_zip_size_mb) if (archive and emit) else None
     if archives:
         archives.header = header
     crop_dir = out_dir / "crops"
-    if not archive:
+    if emit and not archive:
         crop_dir.mkdir(parents=True, exist_ok=True)
+
+    writer = None
+    if particle_table:
+        first = parse_frame_name(frames[0][1]) if frames else {}
+        writer = ParticleTableWriter(out_dir / table_name(profile), {
+            "profile": profile, "workflow_id": workflow_id,
+            "result_h5": str(h5_path),
+            "cruise": first.get("cruise"), "dship_id": first.get("dship_id"),
+            "instrument": first.get("instrument"),
+            "ctd_cast": ctd_cast, "pixel_size_um": pixel_size_um,
+            "isolate_crops": bool(isolate), "absolute_pressure": bool(absolute_pressure),
+            "min_size": min_size, "prediction_model": prediction_model,
+            "subsample_max": subsample_max, "not_living_id": not_living_id,
+            "ecotaxa_tsv": tsv_path.name, **(table_attrs or {}),
+        })
 
     totals = {"skipped": 0, "links": 0, "links_too_long": 0, "predicted": 0,
               "subsampled": 0}
     n_objects = 0
     workers = workers or min(8, os.cpu_count() or 1)
-    # fork: the workers inherit the predictions without pickling them.
-    with multiprocessing.get_context("fork").Pool(workers) as pool, \
-            open(tsv_path, "w", encoding="utf-8") as tsv:
-        tsv.write(header)
-        for objects, counts in pool.imap(_frame_objects, frames, chunksize=8):
-            for key in totals:
-                totals[key] += counts[key]
-            for line, name, data in objects:
-                tsv.write(line + "\n")
-                if archives:
-                    archives.add(line, name, data)
-                else:
-                    (crop_dir / name).write_bytes(data)
-                n_objects += 1
+    tsv = open(tsv_path, "w", encoding="utf-8") if emit else None
+    try:
+        if tsv:
+            tsv.write(header)
+        # fork: the workers inherit the predictions without pickling them.
+        with multiprocessing.get_context("fork").Pool(workers) as pool:
+            for objects, counts, tab, frame_row in pool.imap(
+                    _frame_objects, frames, chunksize=8):
+                for key in totals:
+                    totals[key] += counts[key]
+                if writer:
+                    writer.add_objects(tab)
+                    writer.add_frames({k: np.asarray([v]) for k, v in frame_row.items()})
+                for line, name, data in objects:
+                    tsv.write(line + "\n")
+                    if archives:
+                        archives.add(line, name, data)
+                    else:
+                        (crop_dir / name).write_bytes(data)
+                    n_objects += 1
+    except BaseException:
+        if writer:
+            writer.abort()
+        raise
+    finally:
+        if tsv:
+            tsv.close()
     if archives:
         if n_objects:
             archives.finish()
         elif archives.zip is not None:
             archives.zip.close()
+
+    if writer:
+        subsample = None
+        if subsample_keep is not None:
+            subsample = {"not_living_total": n_not_living,
+                         "not_living_exported": n_not_living - totals["subsampled"],
+                         "kept_fraction": (n_not_living - totals["subsampled"]) / n_not_living}
+        table_path = writer.close({"subsample": subsample})
+        print(f"  particle table: {writer.counts['objects']} objects, "
+              f"{writer.counts['frames']} frames -> {table_path.name}")
+        if table_only:
+            return table_path, writer.counts["objects"]
 
     print(f"  frames: {len(frames)}  objects: {n_objects}  skipped: {totals['skipped']}"
           f"  ({workers} workers)")
@@ -741,6 +880,16 @@ def main() -> int:
                          "outside its mask white - the crop the python route saved and the "
                          "classifier was trained on. --no-isolate-crops writes the stored "
                          "box as-is, neighbours and the segmenter's padding included.")
+    ap.add_argument("--particle-table", action=argparse.BooleanOptionalAction, default=True,
+                    help="Also write particles_<profile>.h5: every object measured, with "
+                         "its prediction and whether it went to EcoTaxa, but no images "
+                         "(default: on). It is what abundances are computed from, since "
+                         "the archive may hold only a subsample (see particle_table.py).")
+    ap.add_argument("--table-only", action="store_true",
+                    help="Write only the particle table - no TSV, no images. For runs "
+                         "exported before it existed; give the same --predictions and "
+                         "--subsample-max as the export, so it marks the same objects "
+                         "as exported.")
     ap.add_argument("--no-zip", action="store_true",
                     help="write the crops as files under crops/ and the TSV, no archive")
     ap.add_argument("--workers", type=int, default=None,
@@ -804,7 +953,10 @@ def main() -> int:
         isolate=args.isolate_crops, ctd_cast=args.ctd_cast,
         archive=not args.no_zip, max_zip_size_mb=args.max_zip_size,
         workers=args.workers, subsample_max=args.subsample_max,
-        not_living_id=not_living_id)
+        not_living_id=not_living_id, particle_table=args.particle_table,
+        table_only=args.table_only,
+        table_attrs={"predictions": args.predictions or "",
+                     "taxonomy_map": args.taxonomy_map or ""})
 
     if n == 0:
         print("ERROR: no objects exported", file=sys.stderr)

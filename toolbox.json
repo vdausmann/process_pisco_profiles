@@ -8,7 +8,7 @@
     "tools": [
         {
             "name": "pisco_ecotaxa_export",
-            "description": "Export an EcoTaxa import archive from the C++ segmenter's result.h5. Writes one PNG per object plus an ecotaxa_<profile>.tsv with acquisition metadata and zooprocess morphometrics, zipped ready for import. If pisco_deconvolve ran before extraction the crops are already deconvolved.",
+            "description": "Export an EcoTaxa import archive from the C++ segmenter's result.h5. Writes one PNG per object plus an ecotaxa_<profile>.tsv with acquisition metadata and zooprocess morphometrics, zipped ready for import. If pisco_deconvolve ran before extraction the crops are already deconvolved. Also writes particles_<profile>.h5, the complete measured object table (no images) that abundances are computed from.",
             "tags": [
                 "pisco",
                 "ecotaxa",
@@ -103,6 +103,11 @@
                         "type": "string",
                         "default": "not-living",
                         "description": "Label of the binary stage's not-living class, resolved through the taxonomy map. Only used with subsampleMax."
+                    },
+                    "particleTable": {
+                        "type": "boolean",
+                        "default": true,
+                        "description": "Also write particles_<profile>.h5 beside the export: every object, measured like the TSV, with its prediction and whether it went to EcoTaxa, but no images. Abundances are computed from it, since the archive may hold only a subsample of the not-living objects."
                     }
                 }
             },
@@ -119,7 +124,7 @@
                     "name": "export",
                     "kind": "directory",
                     "settings_key": "targetPath",
-                    "description": "EcoTaxa import archive(s), crops and TSV"
+                    "description": "EcoTaxa import archive(s), crops and TSV, and the particle table"
                 }
             ]
         },
