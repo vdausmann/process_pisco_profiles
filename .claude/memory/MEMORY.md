@@ -1,0 +1,19 @@
+- [Run with pisco conda env](pisco-run-with-pisco-conda-env.md) — use the pisco env's ROCm torch or ViT falls back to CPU on the AMD GPUs
+- [Crops exhaust inodes](pisco-intermediate-crops-exhaust-inodes.md) — PISCO writes millions of per-particle files; use --cleanup-intermediate or the disk runs out of inodes
+- [EcoTaxa import throughput / living-only](ecotaxa-import-throughput-living-only.md) — import runs ~52 obj/s regardless of parallelism; upload living-only (~1.5%) not all 21M
+- [EcoTaxa API/upload gotchas](ecotaxa-api-workflow-gotchas.md) — client deserialization bug (use raw urllib), sample_id/object_time TSV rules, fix metadata after import via /sample_set/update, set managers, empty vs delete project
+- [GPU deconv non-determinism](gpu-deconv-nondeterministic.md) — recrop can't reproduce an existing TSV's crops; re-run full pipeline --export-zip instead
+- [Not-living validation sampling](ecotaxa-notliving-validation-sampling.md) — how to size + build a random validation set of not-living predictions
+- [Output path (T710) + git remotes](pisco-output-path-and-git-remotes.md) — outputs on /media/veit/T710_data; push to gitlab + github (github via SSH URL)
+- [Deprecated taxa fail validation](ecotaxa-deprecated-taxa-validate-fails.md) — validating to a deprecated taxon 500s + "Changes NOT saved"; remap Asteroidea larvae→Asteroidea, Noctiluca sp.→Noctiluca at upload
+- [Crop isolation (erase other contours)](crop-isolation-erase-other-contours.md) — PISCO_ISOLATE_CROPS=1 whites out neighbours (15%→0.5%); crop count unchanged; pair with a ViT retrain
+- [ATAIR-BSH writeup (publication-structured)](atair-bsh-writeup.md) — full ATAIR effort: deconv-model comparison, isolation, dual-ViT→validation number flow, not-living re-screening, validator caveats
+- [Custom-folders mode regression](custom-folders-mode-regression.md) — commit 02657c0 deleted --folders-file; symlink-tree workaround for ATAIR-style layouts
+- [Deconv model swap breaks the ViT](deconv-model-swap-breaks-vit.md) — new LUCYD model collapses living rate 83-93%; classifier must be retrained alongside
+- [Import asks on ambiguous taxa](ecotaxa-import-asks-ambiguous-taxa.md) — job state 'A'; reply keys are users/taxa NOT missing_*; Noctiluca=58408, Asteroidea=12877
+- [Deconv crops are white-clipped at 245](deconv-crops-are-white-clipped-at-245.md) — not mask cut-outs; the ViT sees clipped crops, so raw-output benchmarks measure the wrong image
+- [Two routes: old python vs HDF5/Hub](pisco-two-routes-hdf5-hub.md) — since 2026-09 there are two pipelines; check which one before editing; docs/handoff/ has the full writeup
+- [Pixel size is 22.5 um/px](scale-bar-pixel-size-22-5.md) — corrected from 23 on 2026-09-09; older bars (incl. project 23286) are 2.2% out
+- [PIScO vs UVP5 volumes](pisco-uvp5-comparison-volumes.md) — mask overhangs frame (1.55 L/frame not 1.79); 20736 ESD at 27 um; UVP volume via PIScO timeline; PIScO excess mostly 0-200 m; reference Fig.14 = PIScO validated<=Aug2025 + old pi r^2 volume vs UVP all objects
+- [EcoTaxa "multiple" categories](ecotaxa-multiple-categories.md) — only multiple<Copepoda/other/species etc. are active; no taxon-pair categories
+- [EcoTaxa similarity sort / own features](ecotaxa-similarity-sort-own-features.md) — features are computed on the server only (no upload, no PIScO network); after a predict, put ViT labels back with classify_auto_multiple

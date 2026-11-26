@@ -11,3 +11,7 @@ folders_ATAIR.txt
 
 # Local credentials. Only the .example is versioned.
 process_pisco_profiles.config.json
+CLAUDE.local.md
+.claude/settings.local.json
+.claude/worktrees/
+.DS_Store
